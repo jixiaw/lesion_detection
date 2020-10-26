@@ -16,9 +16,11 @@ import glob
 import numpy as np
 import sys
 import torch
+import time
+from tqdm import tqdm
 from torch import nn
 from tensorboardX import SummaryWriter
-from pytorch_model.resnet_3D import generate_model, focal_loss
+from pytorch_model.resnet_3D import generate_model, focal_loss, cls_loss
 
 from model import ResNet3D50, ResNet3D18
 
@@ -30,9 +32,9 @@ class Classifier():
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.model_dir = model_dir
-        self.NET_NAME = 'ResNet50'
+        self.NET_NAME = 'ResNet18'
         self.__set_log_dir()  # logging and saving checkpoints
-        self.model = ResNet3D50(num_class=num_classes)
+        self.model = ResNet3D18(num_class=num_classes)
 
     # public functions
     def summary(self):
@@ -178,18 +180,21 @@ class Classifier():
         sys.stdout.write("[{:<{}}] {}/{}".format("=" * cur_len, bar_len, cur, total))
         sys.stdout.flush()
 
-
 class ClassifierTorch():
-    def __init__(self, input_shape, is_training, num_classes, model_dir, config):
+    def __init__(self, input_shape, is_training, num_classes, model_dir, config, fold=None, num_classes2=None):
         self._is_training = is_training
         self.config = config
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.model_dir = model_dir
         self.NET_NAME = 'ResNet18'
+        if fold is None:
+            self.fold = 'fold0'
+        else:
+            self.fold = fold
         self.__set_log_dir()  # logging and saving checkpoints
-        self.model = generate_model(18, n_classes=num_classes, no_max_pool=True).cuda()
-
+        self.model = generate_model(18, n_classes=num_classes, no_max_pool=True, n_classes2=num_classes2).cuda()
+        self.num_classes2 = num_classes2
     # public functions
     def summary(self):
         '''
@@ -242,19 +247,22 @@ class ClassifierTorch():
         if not osp.exists(self.log_dir):
             os.mkdir(self.log_dir)
         num_scan = 2
+        sum_scan = len(data_provider.train_list)
+        steps = sum_scan // num_scan
+        # steps=2
         optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
-        # criterion = nn.CrossEntropyLoss()
-        criterion = focal_loss(gamma=3)
+        criterion = nn.CrossEntropyLoss()
+        # criterion = focal_loss(gamma=3)
         self.summary_writer = SummaryWriter(log_dir=self.log_dir)
-        max_acc = 0.8
-        max_recall = 0.5
-        self.model.train()
+        max_acc = 0.0
+        max_recall = 0.0
         for self.epoch in range(epochs):
             print('# epoch:' + str(self.epoch + 1) + '/' + str(epochs))
             train_loss = []
-            for step in range(self.config.STEPS_PER_EPOCH):
+            self.model.train()
+            for step in range(steps):
                 # ims, labels = data_provider.get_bbox_cls_region(num_scan, batch_size, channel_first=True)
-                ims_all, labels_all = data_provider.get_bbox_cls_region(num_scan, max_num_box=128, channel_first=True)
+                ims_all, labels_all = data_provider.get_bbox_cls_region(num_scan, max_num_box=128, channel_first=True, size=(64, 64, 64))
                 if self.num_classes == 2:
                     labels_all[labels_all > 1] = 1
                 # print(ims.shape, cnt_gt.shape, sze_gt.shape)
@@ -269,17 +277,21 @@ class ClassifierTorch():
                     train_loss.append(loss.cpu().detach().item())
                 optimizer.step()
                 optimizer.zero_grad()
-                self.__draw_progress_bar(step + 1, self.config.STEPS_PER_EPOCH)
+                # self.__draw_progress_bar(step + 1, self.config.STEPS_PER_EPOCH)
+                if step % 10 == 0:
+                    self.log("epoch: {}/{}, step: {}/{}, loss: {:.6f}".format(self.epoch+1, epochs, step, steps, train_loss[-1]))
 
             test_loss = []
             correct = 0
             cnt = 0
             TPs = 0.0
             num_postive = 0.0
+            num_test = len(test_data_provider.train_list)
+            # num_test = 2
             self.model.eval()
             with torch.no_grad():
-                for i in range(len(test_data_provider.train_list)):
-                    ims_all, labels_all = test_data_provider.get_bbox_cls_region(1, max_num_box=None, channel_first=True)
+                for i in tqdm(range(num_test)):
+                    ims_all, labels_all = test_data_provider.get_bbox_cls_region(1, max_num_box=128, channel_first=True, size=(64, 64, 64))
                     # print(ims.shape)
                     for i in range(0, ims_all.shape[0], batch_size):
                         ims = torch.tensor(ims_all[i:i+batch_size], dtype=torch.float32).cuda()
@@ -304,7 +316,7 @@ class ClassifierTorch():
             train_mean_loss = np.mean(train_loss)
             test_mean_loss = np.mean(test_loss)
 
-            print('\nTrain Loss:%f; test loss: %f; recall: %f; test acc: %f' % (
+            self.log('Train Loss:%f; test loss: %f; recall: %f; test acc: %f' % (
             train_mean_loss, test_mean_loss, recall, test_acc))
             self.summary_writer.add_scalar('train_loss', train_mean_loss, self.epoch + 1)
             self.summary_writer.add_scalar('test_loss', test_mean_loss, self.epoch + 1)
@@ -315,17 +327,163 @@ class ClassifierTorch():
                 max_recall = recall
                 max_acc = test_acc
                 self.checkpoint_path = osp.join(self.log_dir,
-                                                self.NET_NAME.lower() + "_epoch{0}.pth".format(self.epoch + 1))
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(self.epoch + 1, recall, test_acc))
                 print('Saving weights to %s' % (self.checkpoint_path))
                 torch.save(self.model.state_dict(), self.checkpoint_path)
                 self.__delete_old_weights(self.config.MAX_KEEPS_CHECKPOINTS)
             elif recall == max_recall and test_acc > max_acc:
                 max_acc = test_acc
                 self.checkpoint_path = osp.join(self.log_dir,
-                                                self.NET_NAME.lower() + "_epoch{0}.pth".format(self.epoch + 1))
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(self.epoch + 1, recall, test_acc))
                 print('Saving weights to %s' % (self.checkpoint_path))
                 torch.save(self.model.state_dict(), self.checkpoint_path)
                 self.__delete_old_weights(self.config.MAX_KEEPS_CHECKPOINTS)
+
+            if self.epoch+1 >= 50 and self.epoch+1 % 10 == 0:
+                self.checkpoint_path = osp.join(self.log_dir,
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(self.epoch + 1, recall, test_acc))
+                print('Saving weights to %s' % (self.checkpoint_path))
+                torch.save(self.model.state_dict(), self.checkpoint_path)
+
+    def train2(self, data_provider, test_data_provider, learning_rate, decay_steps, epochs, batch_size):
+        assert self._is_training == True, 'not in training mode'
+        assert self.num_classes2 is not None, 'not in two cls mode'
+
+        if not osp.exists(self.log_dir):
+            os.mkdir(self.log_dir)
+        num_scan = 2
+        sum_scan = len(data_provider.train_list)
+        steps = sum_scan // num_scan
+        # steps=2
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        # criterion = nn.CrossEntropyLoss()
+        loss_FP = cls_loss(extra_id=2)
+        loss_cls = cls_loss(extra_id=0)
+        # criterion = focal_loss(gamma=3)
+        self.summary_writer = SummaryWriter(log_dir=self.log_dir)
+        max_acc = 0.0
+        max_recall = 0.0
+        max_cls_acc = 0.0
+        for self.epoch in range(epochs):
+            print('# epoch:' + str(self.epoch + 1) + '/' + str(epochs))
+            train_loss1 = []
+            train_loss2 = []
+
+            self.model.train()
+            for step in range(steps):
+                # ims, labels = data_provider.get_bbox_cls_region(num_scan, batch_size, channel_first=True)
+                ims_all, labels_all = data_provider.get_bbox_cls_region(num_scan, max_num_box=128, channel_first=True,
+                                                                        size=(64, 64, 64))
+                # print(ims.shape, cnt_gt.shape, sze_gt.shape)
+                for i in range(0, ims_all.shape[0], batch_size):
+                    ims = torch.tensor(ims_all[i:i + batch_size], dtype=torch.float32).cuda()
+                    labels = torch.tensor(labels_all[i:i + batch_size], dtype=torch.long).cuda()
+                    pred1, pred2 = self.model(ims)
+                    # print(pred.shape, labels.shape)
+                    # print(cnt_preds.shape, sze_preds.shape)
+                    loss1 = loss_FP(pred1, labels)
+                    loss2 = loss_cls(pred2, labels)
+                    loss = loss1 + loss2
+                    loss.backward()
+                    train_loss1.append(loss1.cpu().detach().item())
+                    train_loss2.append(loss2.cpu().detach().item())
+                optimizer.step()
+                optimizer.zero_grad()
+                # self.__draw_progress_bar(step + 1, self.config.STEPS_PER_EPOCH)
+                if step % 10 == 0:
+                    self.log("epoch: {}/{}, step: {}/{}, loss1: {:.6f}, loss2: {:.6f}".format(self.epoch + 1, epochs, step, steps,
+                                                                              train_loss1[-1], train_loss2[-1]))
+
+            test_loss1 = []
+            test_loss2 = []
+            correct = 0
+            cnt = 0
+            TPs = 0.0
+            num_postive = 0.0
+            num_test = len(test_data_provider.train_list)
+            # num_test = 2
+            self.model.eval()
+            with torch.no_grad():
+                for ii in tqdm(range(num_test)):
+                    ims_all, labels_all = test_data_provider.get_bbox_cls_region(1, max_num_box=128, channel_first=True,
+                                                                                 size=(64, 64, 64))
+                    # print(ims.shape)
+                    for i in range(0, ims_all.shape[0], batch_size):
+                        ims = torch.tensor(ims_all[i:i + batch_size], dtype=torch.float32).cuda()
+                        labels = torch.tensor(labels_all[i:i + batch_size], dtype=torch.long).cuda()
+                        pred1, pred2 = self.model(ims)
+                        # print(cnt_preds.shape, sze_preds.shape)
+                        loss1 = loss_FP(pred1, labels)
+                        loss2 = loss_cls(pred2, labels)
+
+                        tp, n = self.get_TP(pred1, labels)
+                        co, n2 = self.get_acc(pred2, labels)
+                        correct += co
+                        cnt += n2
+                        TPs += tp
+                        num_postive += n
+                        test_loss1.append(loss1.cpu().item())
+                        test_loss2.append(loss2.cpu().item())
+
+                # print(cnt_loss, sze_loss)
+
+            test_acc = correct / cnt
+            recall = TPs / num_postive
+            # print(TPs, num_postive)
+            train_mean_loss1 = np.mean(train_loss1)
+            train_mean_loss2 = np.mean(train_loss2)
+
+            test_mean_loss1 = np.mean(test_loss1)
+            test_mean_loss2 = np.mean(test_loss2)
+
+            self.log('Train FP Loss:%f; train cls loss: %f; test FP loss: %f; test cls loss: %f; recall: %f; test acc: %f' % (
+                train_mean_loss1,train_mean_loss2, test_mean_loss1,test_mean_loss2, recall, test_acc))
+            self.summary_writer.add_scalar('train_loss', train_mean_loss1+train_mean_loss2, self.epoch + 1)
+            self.summary_writer.add_scalar('test_loss', test_mean_loss1+test_mean_loss2, self.epoch + 1)
+            self.summary_writer.add_scalar('test_acc', test_acc, self.epoch + 1)
+            self.summary_writer.add_scalar('recall', recall, self.epoch + 1)
+
+            if recall > max_recall:
+                max_recall = recall
+                max_acc = test_acc
+                self.checkpoint_path = osp.join(self.log_dir,
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(
+                                                    self.epoch + 1, recall, test_acc))
+                print('Saving weights to %s' % (self.checkpoint_path))
+                torch.save(self.model.state_dict(), self.checkpoint_path)
+                self.__delete_old_weights(self.config.MAX_KEEPS_CHECKPOINTS)
+            elif recall == max_recall and test_acc > max_acc:
+                max_acc = test_acc
+                self.checkpoint_path = osp.join(self.log_dir,
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(
+                                                    self.epoch + 1, recall, test_acc))
+                print('Saving weights to %s' % (self.checkpoint_path))
+                torch.save(self.model.state_dict(), self.checkpoint_path)
+                self.__delete_old_weights(self.config.MAX_KEEPS_CHECKPOINTS)
+
+            if self.epoch + 1 >= 50 and self.epoch + 1 % 10 == 0:
+                self.checkpoint_path = osp.join(self.log_dir,
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(
+                                                    self.epoch + 1, recall, test_acc))
+                print('Saving weights to %s' % (self.checkpoint_path))
+                torch.save(self.model.state_dict(), self.checkpoint_path)
+
+    def get_TP(self, pred, labels):
+        labels[labels > 0] = 1
+        pred = torch.argmax(pred, dim=1)
+        stat = labels > 0
+        TP = torch.eq(pred[stat], labels[stat]).sum().item()
+        N = stat.sum().item()
+        return TP, N
+
+    def get_acc(self, pred, labels):
+        stats = labels > 0
+        N = stats.sum().item()
+        if N == 0:
+            return 0, 0
+        pred = torch.argmax(pred, dim=1)
+        correct = torch.eq(pred[stats], labels[stats]-1).sum().item()
+        return correct, N
 
     def predict(self, image):
         return self.model(image)
@@ -333,10 +491,15 @@ class ClassifierTorch():
     def predict_on_batch(self, images):
         return self.model.predict_on_batch(images)
 
+    def log(self, info):
+        print(time.strftime('%Y.%m.%d %H:%M:%S', time.localtime(time.time())), info)
+
     # private functions
     def __set_log_dir(self):
         self.epoch = 0
-        self.log_dir = osp.join(self.model_dir, self.NET_NAME.lower())
+        self.log_dir = osp.join(self.model_dir, self.fold)
+        if not os.path.exists(self.log_dir):
+            os.mkdir(self.log_dir)
 
     def __delete_old_weights(self, nun_max_keep):
         '''

@@ -1,11 +1,25 @@
 import os
 import tensorflow as tf
-
+import json
+import logging
 from config import cfg
 from data_generator import DataGenerator
 from centernet3D import Mediastinal_3dcenternet
 from classifier import Classifier, ClassifierTorch
 
+logger = logging.getLogger('train centernet')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+handler.setFormatter(formatter)
+handler.setLevel(0)
+logger.addHandler(handler)
+
+file_handler = logging.FileHandler('centernet.log', mode='a')
+file_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 def train_detect():
@@ -42,17 +56,23 @@ def train_detect():
 
 
 def train_cls():
-    datagenerator = DataGenerator(cfg, training=True, mode='cls')
-    test_datagenerator = DataGenerator(cfg, training=False, mode='cls')
+    with open(cfg.cross_validation, 'r') as f:
+        cv = json.load(f)
+    datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  label_file=None, cross_validation=cv['fold0'])
+    test_datagenerator = DataGenerator(cfg, training=False, mode='cls', data_root=cfg.DATA_ROOT,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  label_file=None, cross_validation=cv['fold0'])
 
     load_pretrained = True
     if not os.path.exists(cfg.CHECKPOINTS_ROOT):
         os.mkdir(cfg.CHECKPOINTS_ROOT)
 
-    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'resnet18_cls3_sapcing1')
+    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'resnet18_cls2_2_sapcing1')
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
-    model = Classifier(cfg.INPUT_SHAPE, is_training=True, num_classes=3, model_dir=model_dir, config=cfg)
+    model = Classifier(cfg.INPUT_SHAPE, is_training=True, num_classes=2, model_dir=model_dir, config=cfg)
     print(tf.test.is_gpu_available())
     # model.model(tf.ones((1, 192, 192, 192, 1)))
     if load_pretrained:
@@ -69,20 +89,22 @@ def train_cls():
     #
 
 
-def train_cls_torch():
-    datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
-                                  annotation_file=cfg.train_anno_file, results_file=cfg.train_results_file, label_file=None)
-    test_datagenerator = DataGenerator(cfg, training=False, mode='cls', data_root=cfg.TEST_DATA_ROOT,
-                                  annotation_file=cfg.test_anno_file, results_file=cfg.test_results_file, label_file=None)
+def train_cls_torch(cv, fold):
 
+    datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  label_file=cfg.label_file, cross_validation=cv[fold])
+    test_datagenerator = DataGenerator(cfg, training=False, mode='cls', data_root=cfg.DATA_ROOT,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  label_file=cfg.label_file, cross_validation=cv[fold])
     load_pretrained = True
     if not os.path.exists(cfg.CHECKPOINTS_ROOT):
         os.mkdir(cfg.CHECKPOINTS_ROOT)
 
-    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'resnet18_cls2_torch_spacing1_focal_3')
+    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'resnet18_cls2_2_torch_spacing1')
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
-    model = ClassifierTorch(cfg.INPUT_SHAPE, is_training=True, num_classes=2, model_dir=model_dir, config=cfg)
+    model = ClassifierTorch(cfg.INPUT_SHAPE, is_training=True, num_classes=3, model_dir=model_dir, config=cfg, fold=fold, num_classes2=2)
     # print(tf.test.is_gpu_available())
     # model.model(tf.ones((1, 192, 192, 192, 1)))
     if load_pretrained:
@@ -95,10 +117,15 @@ def train_cls_torch():
             # if continue_train:
             #     current_epoch = int(checkpoint_file.split('.')[-2].split('epoch')[-1])
 
-    model.train(datagenerator, test_datagenerator, learning_rate=0.0002, decay_steps=10000, epochs=600, batch_size=32)
+    model.train2(datagenerator, test_datagenerator, learning_rate=0.0002, decay_steps=10000, epochs=80, batch_size=8)
     #
 
 if __name__ == '__main__':
-    train_cls_torch()
+    with open(cfg.cross_validation, 'r') as f:
+        cv = json.load(f)
+    # fold = 'fold0'
+    for fold in cv.keys():
+        print(fold)
+        train_cls_torch(cv, fold)
     # train_cls()
     # train_detect()

@@ -425,8 +425,9 @@ def load_raw_data(data_path, data_name, resize_same=False):
         return np_data, None
 
 
-def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False):
+def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False, crop_large=False):
     '''
+    :param crop_large: 为 True 表示按最长边进行裁剪
     :param random_crop:
     :param ext:
     :param volume: numpy array, shape like (w, h, d, ...)
@@ -442,14 +443,6 @@ def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False):
     dim = bbox.ndim
     if dim == 1:
         bbox = np.expand_dims(bbox, 0)
-        # x1 = np.maximum(0, int(bbox[0] - bbox[3] / 2))
-        # x2 = np.minimum(w, int(bbox[0] + bbox[3] / 2 + 1))
-        # y1 = np.maximum(0, int(bbox[1] - bbox[4] / 2))
-        # y2 = np.minimum(h, int(bbox[1] + bbox[4] / 2 + 1))
-        # z1 = np.maximum(0, int(bbox[2] - bbox[5] / 2))
-        # z2 = np.minimum(d, int(bbox[2] + bbox[5] / 2 + 1))
-        # return volume[x1:x2, y1:y2, z1:z2]
-    # print(bbox.shape)
     if random_crop:
         bbox_2 = bbox.copy()
         bbox_2[:, :3] += np.random.randint(-2, 3, (bbox.shape[0], 3))
@@ -457,6 +450,11 @@ def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False):
         bbox = np.vstack((bbox, bbox_2))
         # print(bbox)
     bbox[bbox < 0] = 0
+    if crop_large:
+        max_size = np.max(bbox[:, 3:6], axis=1)
+        bbox[:, 3] = max_size
+        bbox[:, 4] = max_size
+        bbox[:, 5] = max_size
     x1 = np.maximum(0, bbox[:, 0] - bbox[:, 3] / 2 - ext[0]).astype(np.int)
     x2 = np.minimum(w, bbox[:, 0] + bbox[:, 3] / 2 + 1 + ext[0]).astype(np.int)
     y1 = np.maximum(0, bbox[:, 1] - bbox[:, 4] / 2 - ext[1]).astype(np.int)

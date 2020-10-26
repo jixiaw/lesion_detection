@@ -111,7 +111,8 @@ class ResNet(nn.Module):
                  no_max_pool=False,
                  shortcut_type='B',
                  widen_factor=1.0,
-                 n_classes=400):
+                 n_classes=400,
+                 n_classes2=None):
         super().__init__()
 
         block_inplanes = [int(x * widen_factor) for x in block_inplanes]
@@ -149,7 +150,9 @@ class ResNet(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
         self.fc = nn.Linear(block_inplanes[3] * block.expansion, n_classes)
-
+        self.n_classes2 = n_classes2
+        if n_classes2 is not None:
+            self.fc1 = nn.Linear(block_inplanes[3] * block.expansion, n_classes2)
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
                 nn.init.kaiming_normal_(m.weight,
@@ -215,9 +218,12 @@ class ResNet(nn.Module):
         x = self.avgpool(x)
         # print('after avgpool', x.shape)
         x = x.view(x.size(0), -1)
-        x = self.fc(x)
+        x1 = self.fc(x)
+        if self.n_classes2 is not None:
+            x2 = self.fc1(x)
+            return x1, x2
 
-        return x
+        return x1
 
 
 class focal_loss(nn.Module):
@@ -269,6 +275,47 @@ class focal_loss(nn.Module):
         else:
             loss = loss.sum()
         return loss
+
+
+class cls_loss(nn.Module):
+    def __init__(self, num_classes=2, extra_id=2):
+        super(cls_loss, self).__init__()
+        self.num_classes = num_classes
+        self.extra_id = extra_id
+
+    def forward(self, preds, labels):
+        '''
+        :param pred: (n, 2)
+        :param labels:  (n,)  [0, 1, 2, 0, 1]
+        :return:
+        '''
+        if self.extra_id == 0:
+            w1 = torch.zeros_like(labels)
+            w2 = torch.ones_like(labels)
+            weights = torch.where(labels == 0, w1, w2)
+            labels_new = torch.where(labels == 1, w1, w2)
+            # print(labels_new)
+            preds_softmax = F.softmax(preds, dim=1)
+            preds_logsoft = torch.log(preds_softmax)
+            # preds_softmax = preds_softmax.gather(1, labels_new.view(-1, 1))
+            preds_logsoft = preds_logsoft.gather(1, labels_new.view(-1, 1))
+            loss = -torch.mul(weights, preds_logsoft.t())
+            loss = loss.sum() / weights.sum()
+            return loss
+        else:
+            labels[labels > 1] = 1
+            return nn.CrossEntropyLoss()(preds, labels)
+
+if __name__ == '__main__':
+    pred = torch.randn(5, 2)
+    labels = torch.empty(5, dtype=torch.long).random_(3)
+    print(pred, labels)
+    print(cls_loss(extra_id=0)(pred, labels))
+    pred = pred[labels>0]
+    labels = labels[labels>0]
+    labels = labels - 1
+    print(pred, labels)
+    print(cls_loss(extra_id=2)(pred, labels))
 
 
 def generate_model(model_depth, **kwargs):

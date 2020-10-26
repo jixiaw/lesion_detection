@@ -20,7 +20,8 @@ from config import cfg
 
 
 class DataGenerator(object):
-    def __init__(self, cfg, training=True, mode='detect', data_root=None, annotation_file=None, results_file=None, label_file=None):
+    def __init__(self, cfg, training=True, mode='detect', data_root=None, annotation_file=None, results_file=None,
+                        label_file=None, cross_validation=None):
         '''
         :param cfg: 各种参数
         :param training: 是否训练
@@ -29,6 +30,7 @@ class DataGenerator(object):
         :param annotation_file: 用于检测的标签文件
         :param results_file: 检测的结果文件，用于分类
         :param label_file: 分类的标签文件
+        :param cross_validation: 交叉验证，dict: 包括 train 和 val 的列表
         '''
         if annotation_file is None:
             if training:
@@ -43,10 +45,17 @@ class DataGenerator(object):
         self.training = training
         print('loading annotations from ', self.annotation_file)
         self.train_list, self.annotations = self.load_annotations(self.annotation_file)
+        if cross_validation is not None:
+            if self.training:
+                self.train_list = cross_validation['train']
+            else:
+                self.train_list = cross_validation['val']
         if self.mode == 'cls':
             self.labels = self.load_labels(label_file)
+            # print("load label file from ", label_file)
             self.results_file = results_file
             self.detect_results = self.load_results(self.results_file)
+
         # np.random.shuffle(self.file_list)
         # self.train_list = self.file_list
         print('load annotation done')
@@ -300,7 +309,7 @@ class DataGenerator(object):
         else:
             im, bbox = load_raw_data(self.data_root_dir, file_name, resize_same=True)
         if gray:
-            im = hu2gray(im, WL=40, WW=350)
+            im = hu2gray(im, WL=40, WW=500)
         return im, None
 
     def save_raw_bbox(self):
@@ -316,7 +325,7 @@ class DataGenerator(object):
         with open(self.results_file, 'w') as f:
             json.dump(self.detect_results, f)
 
-    def get_all_bbox(self, file_name, channel_first=False, crop=False):
+    def get_all_bbox(self, file_name, channel_first=False, crop=False, size=(64, 64, 64)):
         im, bbox = self.get_img(file_name)
         bbox_pred = np.array(self.detect_results[file_name]['bbox_pred'], dtype=np.float32)
         bbox_gt = np.array(self.detect_results[file_name]['bbox_gt'], dtype=np.float32)
@@ -329,8 +338,8 @@ class DataGenerator(object):
             label = [self.labels[file_name] + 1 if e else 0 for e in dist]
         else:
             iou = IOU_3d_max(bbox_pred, bbox_gt)
-            bbox_volume = get_bbox_region(im, bbox_pred)
-            bbox_volume = [hu2gray(resize(v, (32, 32, 32)), WL=40, WW=500) for v in bbox_volume]
+            bbox_volume = get_bbox_region(im, bbox_pred, crop_large=True)
+            bbox_volume = [resize(v, size) for v in bbox_volume]
             label = [0 if e < 0.3 else self.labels[file_name] + 1 for e in iou]
         bbox_volume = np.array(bbox_volume, dtype=np.float32) / 255.0
         bbox_volume = (bbox_volume - self.cfg.mean) / self.cfg.std
@@ -339,7 +348,7 @@ class DataGenerator(object):
         else:
             return np.expand_dims(bbox_volume, -1), label
 
-    def get_bbox_cls_region(self, num_scans, max_num_box=None, channel_first=False):
+    def get_bbox_cls_region(self, num_scans, max_num_box=None, channel_first=False, size=(64, 64, 64)):
         # def resize_32(v):
         #     return resize(v, (32, 32, 32))
         labels = []
@@ -348,15 +357,28 @@ class DataGenerator(object):
             file_name = self.train_list[int((self.train_file_idx + i) % len(self.train_list))]
             # im, bbox = self.get_img_bbox(file_name)
             # im, bbox = load_raw_data(self.data_root_dir, file_name)
-            im, bbox = self.get_img(file_name)
-            if self.training:
-                bbox_pred = np.array(self.detect_results[file_name]['bbox_pred_raw'], dtype=np.float32)
-                bbox_gt = np.array(self.detect_results[file_name]['bbox_gt_raw'], dtype=np.float32)
-            else:
-                bbox_pred = np.array(self.detect_results[file_name]['bbox_pred'], dtype=np.float32)
-                bbox_gt = np.array(self.detect_results[file_name]['bbox_gt'], dtype=np.float32)
+            im, bbox = self.get_img(file_name, gray=True)
+            # if self.training:
+            #     bbox_pred = np.array(self.detect_results[file_name]['bbox_pred_raw'], dtype=np.float32)
+            #     bbox_gt = np.array(self.detect_results[file_name]['bbox_gt_raw'], dtype=np.float32)
+            # else:
+            bbox_pred = np.array(self.detect_results[file_name]['bbox_pred'], dtype=np.float32)
+            bbox_gt = np.array(self.detect_results[file_name]['bbox_gt'], dtype=np.float32)
+            # print(bbox_gt, bbox_pred[:8])
+
             bbox_pred *= np.array([im.shape[0], im.shape[1], im.shape[2], im.shape[0], im.shape[1], im.shape[2]])
             bbox_gt *= np.array([im.shape[0], im.shape[1], im.shape[2], im.shape[0], im.shape[1], im.shape[2]])
+
+            maxsize = np.max(bbox_pred[:, 3:6], axis=1)
+            minsize = np.min(bbox_pred[:, 3:6], axis=1)
+            idx = maxsize < minsize * 5
+            # print(np.sum(idx), idx)
+            # print(bbox_pred.shape)
+            bbox_pred = bbox_pred[idx]
+            # print(bbox_pred.shape)
+            # print(bbox_gt, bbox_pred[:8])
+            if max_num_box is not None:
+                bbox_pred = bbox_pred[:10]
             # print(im.shape)
             # print(bbox)
             # print(bbox_gt)
@@ -366,9 +388,10 @@ class DataGenerator(object):
                 # print(bbox_, bbox)
                 iou = IOU_3d_max(bbox_pred, bbox_gt)
                 # print(iou)
-                bbox_volume = get_bbox_region(im, bbox_pred)
-
-                bbox_volume = [hu2gray(resize(v, (32, 32, 32)), WL=40, WW=500) for v in bbox_volume]
+                bbox_volume = get_bbox_region(im, bbox_pred, crop_large=True)
+                # for v in bbox_volume:
+                #     print(v.shape)
+                bbox_volume = [resize(v, size) for v in bbox_volume]
 
                 volumes += bbox_volume
                 label = [0 if e < 0.3 else self.labels[file_name] + 1 for e in iou]
@@ -382,8 +405,8 @@ class DataGenerator(object):
 
                 # print(bbox_tp.shape, bbox_fp.shape)
 
-                bbox_volume_tp = get_bbox_region(im, bbox_tp, random_crop=self.training)
-                bbox_volume_fp = get_bbox_region(im, bbox_fp)
+                bbox_volume_tp = get_bbox_region(im, bbox_tp, random_crop=self.training, crop_large=True)
+                bbox_volume_fp = get_bbox_region(im, bbox_fp, crop_large=True)
 
                 valid_fp_id = []
                 for idx, v in enumerate(bbox_volume_fp):
@@ -403,8 +426,8 @@ class DataGenerator(object):
                 # bbox_volume_tp = [bbox_volume_tp[idx] for idx in choice_tp_id]
 
                 # bbox_volume_tp = list(map(resize_32, bbox_volume_tp))
-                bbox_volume_tp = [hu2gray(resize(v, (32, 32, 32)), WL=40, WW=500) for v in bbox_volume_tp]
-                bbox_volume_fp = [hu2gray(resize(v, (32, 32, 32)), WL=40, WW=500) for v in bbox_volume_fp]
+                bbox_volume_tp = [resize(v, size) for v in bbox_volume_tp]
+                bbox_volume_fp = [resize(v, size) for v in bbox_volume_fp]
                 label = [self.labels[file_name] + 1] * len(bbox_volume_tp) + [0] * len(bbox_volume_fp)
                 volumes += bbox_volume_tp
                 volumes += bbox_volume_fp
@@ -489,11 +512,16 @@ class DataGenerator(object):
 
 
 if __name__ == '__main__':
-    datagenerator = DataGenerator(cfg, training=False, mode='cls', data_root=cfg.TEST_DATA_ROOT,
-                                  annotation_file=cfg.test_anno_file, results_file=cfg.test_results_file, label_file=None)
+    with open(cfg.cross_validation, 'r') as f:
+        cv = json.load(f)
+    datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  label_file=None, cross_validation=cv['fold0'])
     import time
     t1 = time.time()
-    v, l = datagenerator.get_bbox_cls_region(1, max_num_box=32)
+    v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
+    # v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
+    # v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
 
     # v, l = datagenerator.get_bbox_cls_region_crop(2, 16)
     # t3 = time.time()
