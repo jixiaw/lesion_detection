@@ -96,6 +96,38 @@ def get_results_torch(datagenerator, model):
             train_res[name] = bbox
     return train_res
 
+def get_results_torch_FPN(datagenerator, model):
+    train_res = {}
+    device = torch.device('cuda:0')
+    model.eval()
+    with torch.no_grad():
+        for name in tqdm(datagenerator.train_list):
+            bbox = {}
+            im, anno = datagenerator.get_test_img_from_name(name, return_box=True, channel_first=False)
+
+            # im, cnt_gt, sze_gt = datagenerator.get_img_from_name(name)
+            im = torch.from_numpy(np.transpose(im, (0, 4, 1, 2, 3))).to(device)
+            preds = model(im)
+            bbox['bbox_gt'] = []
+            bbox['bbox_pred'] = []
+            bbox['score'] = []
+            # cnt_pred, sze_pred = model(im)
+            for cnt_pred, sze_pred in preds:
+                cnt_pred = cnt_pred.detach().cpu().numpy()
+                sze_pred = sze_pred.detach().cpu().numpy()
+                cnt_pred = np.transpose(cnt_pred, (0, 2, 3, 4, 1))
+                sze_pred = np.transpose(sze_pred, (0, 2, 3, 4, 1))
+
+                pred_bboxs = generate_bbox_from_pred(cnt_pred, sze_pred)
+                pos, sze, score = pred_bboxs[0]
+                bbox_gt = anno[0] / 128.0
+                bbox_pred = np.hstack((pos, sze))
+                bbox['bbox_gt'] += bbox_gt.tolist()
+                bbox['bbox_pred'] += bbox_pred.tolist()
+                bbox['score'] += score.tolist()
+            train_res[name] = bbox
+    return train_res
+
 
 def get_all_results(datagenerator, model):
     res = {}
@@ -146,7 +178,7 @@ def generate_bbox_from_pred(cnt_pred, sze_pred, offset=(0, 16, 0)):
     return bboxs
 
 
-def IOU_3d(bbox_pred, bbox_gt, offset=1.0/128):
+def IOU_3d(bbox_pred, bbox_gt, iobb=False, offset=1.0/128):
     if isinstance(bbox_pred, list):
         bbox_pred = np.array(bbox_pred)
     if isinstance(bbox_gt, list):
@@ -169,7 +201,11 @@ def IOU_3d(bbox_pred, bbox_gt, offset=1.0/128):
     y = np.maximum(yright - yleft + offset, 0)
     z = np.maximum(zright - zleft + offset, 0)
     inter_area = x * y * z
-    IOU = inter_area / (area_gt + area_pred - inter_area)
+    if iobb:
+        IOU = inter_area / area_gt
+    else:
+        IOU = inter_area / (area_gt + area_pred - inter_area)
+
     return IOU
 
 
@@ -271,6 +307,10 @@ def froc(train_res, method='iou', mesh=np.arange(0.01, 0.5, 0.01), iou_threshold
             iou = np.zeros(bbox_pred.shape[0])
             for i in range(0, bbox_gt.shape[0]):
                 iou = np.maximum(iou, IOU_3d(bbox_pred, bbox_gt[i]))
+        elif method == 'iobb':
+            iobb = np.zeros(bbox_pred.shape[0])
+            for i in range(0, bbox_gt.shape[0]):
+                iobb = np.maximum(iobb, IOU_3d(bbox_pred, bbox_gt[i], iobb=True))
         else:
             dists = np.zeros(bbox_pred.shape[0])
             for i in range(0, bbox_gt.shape[0]):
@@ -282,6 +322,8 @@ def froc(train_res, method='iou', mesh=np.arange(0.01, 0.5, 0.01), iou_threshold
             num = idx[0].shape[0]
             if method == 'iou':
                 fp = np.sum(iou[idx] <= iou_threshold)
+            elif method == 'iobb':
+                fp = np.sum(iobb[idx] <= iou_threshold)
             else:
                 fp = num - np.sum(dists[idx])
             tps.append(num - fp)

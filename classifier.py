@@ -1,5 +1,6 @@
 import os
 import math
+import logging
 import os.path as osp
 import tensorflow as tf
 # from tensorflow import math
@@ -24,6 +25,7 @@ from pytorch_model.resnet_3D import generate_model, focal_loss, cls_loss
 
 from model import ResNet3D50, ResNet3D18
 
+logger = logging.getLogger('train centernet')
 
 class Classifier():
     def __init__(self, input_shape, is_training, num_classes, model_dir, config):
@@ -181,20 +183,27 @@ class Classifier():
         sys.stdout.flush()
 
 class ClassifierTorch():
-    def __init__(self, input_shape, is_training, num_classes, model_dir, config, fold=None, num_classes2=None):
+    def __init__(self, input_shape, is_training, num_classes, model_dir, config, model_depth=18, senet=False, fold=None, num_classes2=None):
         self._is_training = is_training
         self.config = config
         self.input_shape = input_shape
         self.num_classes = num_classes
         self.model_dir = model_dir
-        self.NET_NAME = 'ResNet18'
+        if senet:
+            self.NET_NAME = 'SEResNet' + str(model_depth)
+        else:
+            self.NET_NAME = "ResNet" + str(model_depth)
         if fold is None:
             self.fold = 'fold0'
         else:
             self.fold = fold
         self.__set_log_dir()  # logging and saving checkpoints
-        self.model = generate_model(18, n_classes=num_classes, no_max_pool=True, n_classes2=num_classes2).cuda()
+        if num_classes2 is None:
+            self.model = generate_model(model_depth, senet=senet, n_classes=num_classes, no_max_pool=True).cuda()
+        else:
+            self.model = generate_model(model_depth, senet=senet, n_classes=num_classes, no_max_pool=True, n_classes2=num_classes2).cuda()
         self.num_classes2 = num_classes2
+        logger.info(self.NET_NAME)
     # public functions
     def summary(self):
         '''
@@ -230,8 +239,7 @@ class ClassifierTorch():
         # self.model(tf.ones((1, 32, 32, 32, 1)))  # 初始化模型，不加的话加载模型会报错
         self.model.load_state_dict(torch.load(filepath))
 
-    def train(self, data_provider, test_data_provider, learning_rate, decay_steps, epochs, batch_size,
-              augment=None, custom_callbacks=None):
+    def train(self, data_provider, test_data_provider, learning_rate, epochs, batch_size):
         '''
         Start training the model from specified dataset
         :param train_dataset:
@@ -300,11 +308,14 @@ class ClassifierTorch():
                         # print(cnt_preds.shape, sze_preds.shape)
                         loss = criterion(pred, labels)
                         pred = torch.argmax(pred, dim=1).detach()
-                        correct += torch.eq(pred, labels).sum().item()
-                        cnt += labels.shape[0]
+                        # correct += torch.eq(pred, labels).sum().item()
+                        # cnt += labels.shape[0]
                         stat = labels > 0
-                        TP = torch.eq(pred[stat], labels[stat]).sum().item()
+                        TP = torch.sum(pred[stat] > 0).item()
+                        # TP = torch.eq(pred[stat], labels[stat]).sum().item()
+                        correct += torch.eq(pred[stat], labels[stat]).sum().item()
                         N = stat.sum().item()
+                        cnt += N
                         TPs += TP
                         num_postive += N
                         test_loss.append(loss.cpu().item())
@@ -344,8 +355,14 @@ class ClassifierTorch():
                                                 self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(self.epoch + 1, recall, test_acc))
                 print('Saving weights to %s' % (self.checkpoint_path))
                 torch.save(self.model.state_dict(), self.checkpoint_path)
+            if recall > 0.9:
+                self.checkpoint_path = osp.join(self.log_dir,
+                                                self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(
+                                                    self.epoch + 1, recall, test_acc))
+                print('Saving weights to %s' % (self.checkpoint_path))
+                torch.save(self.model.state_dict(), self.checkpoint_path)
 
-    def train2(self, data_provider, test_data_provider, learning_rate, decay_steps, epochs, batch_size):
+    def train2(self, data_provider, test_data_provider, learning_rate, epochs, batch_size, start_epoch=0):
         assert self._is_training == True, 'not in training mode'
         assert self.num_classes2 is not None, 'not in two cls mode'
 
@@ -364,7 +381,7 @@ class ClassifierTorch():
         max_acc = 0.0
         max_recall = 0.0
         max_cls_acc = 0.0
-        for self.epoch in range(epochs):
+        for self.epoch in range(start_epoch, epochs):
             print('# epoch:' + str(self.epoch + 1) + '/' + str(epochs))
             train_loss1 = []
             train_loss2 = []
@@ -391,7 +408,7 @@ class ClassifierTorch():
                 optimizer.zero_grad()
                 # self.__draw_progress_bar(step + 1, self.config.STEPS_PER_EPOCH)
                 if step % 10 == 0:
-                    self.log("epoch: {}/{}, step: {}/{}, loss1: {:.6f}, loss2: {:.6f}".format(self.epoch + 1, epochs, step, steps,
+                    logger.info("epoch: {}/{}, step: {}/{}, loss1: {:.6f}, loss2: {:.6f}".format(self.epoch + 1, epochs, step, steps,
                                                                               train_loss1[-1], train_loss2[-1]))
 
             test_loss1 = []
@@ -436,7 +453,7 @@ class ClassifierTorch():
             test_mean_loss1 = np.mean(test_loss1)
             test_mean_loss2 = np.mean(test_loss2)
 
-            self.log('Train FP Loss:%f; train cls loss: %f; test FP loss: %f; test cls loss: %f; recall: %f; test acc: %f' % (
+            logger.info('Train FP Loss:%f; train cls loss: %f; test FP loss: %f; test cls loss: %f; recall: %f; test acc: %f' % (
                 train_mean_loss1,train_mean_loss2, test_mean_loss1,test_mean_loss2, recall, test_acc))
             self.summary_writer.add_scalar('train_loss', train_mean_loss1+train_mean_loss2, self.epoch + 1)
             self.summary_writer.add_scalar('test_loss', test_mean_loss1+test_mean_loss2, self.epoch + 1)
@@ -461,18 +478,20 @@ class ClassifierTorch():
                 torch.save(self.model.state_dict(), self.checkpoint_path)
                 self.__delete_old_weights(self.config.MAX_KEEPS_CHECKPOINTS)
 
-            if self.epoch + 1 >= 50 and self.epoch + 1 % 10 == 0:
+            if recall > 0.9:
                 self.checkpoint_path = osp.join(self.log_dir,
                                                 self.NET_NAME.lower() + "_epoch{}_{:.2f}_{:.2f}.pth".format(
                                                     self.epoch + 1, recall, test_acc))
-                print('Saving weights to %s' % (self.checkpoint_path))
+                logger.info('Saving weights to %s' % (self.checkpoint_path))
                 torch.save(self.model.state_dict(), self.checkpoint_path)
 
     def get_TP(self, pred, labels):
-        labels[labels > 0] = 1
+        # labels[labels > 0] = 1
+        label_new = labels.clone()
+        label_new[label_new > 1] = 1
         pred = torch.argmax(pred, dim=1)
-        stat = labels > 0
-        TP = torch.eq(pred[stat], labels[stat]).sum().item()
+        stat = label_new > 0
+        TP = torch.eq(pred[stat], label_new[stat]).sum().item()
         N = stat.sum().item()
         return TP, N
 

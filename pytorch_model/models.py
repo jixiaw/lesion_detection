@@ -175,6 +175,128 @@ class unet_CT_dsv_3D(nn.Module):
         return log_p
 
 
+class unet_CT_dsv_3D_FPN(nn.Module):
+
+    def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True, is_dsv=False):
+        super(unet_CT_dsv_3D_FPN, self).__init__()
+        self.is_deconv = is_deconv
+        self.in_channels = in_channels
+        self.is_batchnorm = is_batchnorm
+        self.feature_scale = feature_scale
+        self.is_dsv = is_dsv
+        self.n_classes = n_classes
+
+        filters = [64, 128, 256, 512, 1024]
+        filters = [int(x / self.feature_scale) for x in filters]
+
+        # downsampling
+        self.conv1 = UnetConv3(self.in_channels, filters[0], self.is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.maxpool1 = nn.MaxPool3d(kernel_size=(2, 2, 2))
+
+        self.conv2 = UnetConv3(filters[0], filters[1], self.is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.maxpool2 = nn.MaxPool3d(kernel_size=(2, 2, 2))
+
+        self.conv3 = UnetConv3(filters[1], filters[2], self.is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.maxpool3 = nn.MaxPool3d(kernel_size=(2, 2, 2))
+
+        self.conv4 = UnetConv3(filters[2], filters[3], self.is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+        self.maxpool4 = nn.MaxPool3d(kernel_size=(2, 2, 2))
+
+        self.center = UnetConv3(filters[3], filters[4], self.is_batchnorm, kernel_size=(3,3,3), padding_size=(1,1,1))
+
+        # upsampling
+        self.up_concat4 = UnetUp3_CT(filters[4], filters[3], is_batchnorm)
+        self.up_concat3 = UnetUp3_CT(filters[3], filters[2], is_batchnorm)
+        self.up_concat2 = UnetUp3_CT(filters[2], filters[1], is_batchnorm)
+        self.up_concat1 = UnetUp3_CT(filters[1], filters[0], is_batchnorm)
+
+        # deep supervision
+        if is_dsv:
+            self.dsv4 = UnetDsv3(in_size=filters[3], out_size=n_classes, scale_factor=8)
+            self.dsv3 = UnetDsv3(in_size=filters[2], out_size=n_classes, scale_factor=4)
+            self.dsv2 = UnetDsv3(in_size=filters[1], out_size=n_classes, scale_factor=2)
+            self.dsv1 = nn.Conv3d(in_channels=filters[0], out_channels=n_classes, kernel_size=1)
+            self.out1 = nn.Conv3d(n_classes*4, n_classes, 3, 1, 1, bias=False)
+            self.out2 = nn.Conv3d(n_classes*4, 3, 3, 1, 1, bias=False)
+
+        # final conv (without any concat)
+        # self.final = nn.Conv3d(n_classes*4, n_classes, 1)
+        else:
+            self.cntout1 = self._make_out_layer(filters[0], n_classes, 'center')
+            self.szeout1 = self._make_out_layer(filters[0], 3, 'size')
+            self.cntout2 = self._make_out_layer(filters[1], n_classes, 'center')
+            self.szeout2 = self._make_out_layer(filters[1], 3, 'size')
+            self.cntout3 = self._make_out_layer(filters[2], n_classes, 'center')
+            self.szeout3 = self._make_out_layer(filters[2], 3, 'size')
+            self.cntout4 = self._make_out_layer(filters[3], n_classes, 'center')
+            self.szeout4 = self._make_out_layer(filters[3], 3, 'size')
+
+
+
+        # initialise weights
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv3d):
+        #         init_weights(m, init_type='kaiming')
+        #     elif isinstance(m, nn.BatchNorm3d):
+        #         init_weights(m, init_type='kaiming')
+
+    def _make_out_layer(self, input_size, output_size, mode='center'):
+        if mode == 'center':
+            layer = [nn.Conv3d(input_size, output_size, 3, 1, 1, bias=False),
+                     nn.Sigmoid()]
+        else:
+            layer = [
+                     nn.Conv3d(input_size, output_size, 3, 1, 1, bias=False)]
+        return nn.Sequential(*layer)
+
+    def forward(self, inputs):
+        conv1 = self.conv1(inputs)
+        maxpool1 = self.maxpool1(conv1)
+
+        conv2 = self.conv2(maxpool1)
+        maxpool2 = self.maxpool2(conv2)
+
+        conv3 = self.conv3(maxpool2)
+        maxpool3 = self.maxpool3(conv3)
+
+        conv4 = self.conv4(maxpool3)
+        maxpool4 = self.maxpool4(conv4)
+
+        center = self.center(maxpool4)
+        up4 = self.up_concat4(conv4, center)
+        up3 = self.up_concat3(conv3, up4)
+        up2 = self.up_concat2(conv2, up3)
+        up1 = self.up_concat1(conv1, up2)
+
+        # Deep Supervision
+        if self.is_dsv:
+            dsv4 = self.dsv4(up4)
+            dsv3 = self.dsv3(up3)
+            dsv2 = self.dsv2(up2)
+            dsv1 = self.dsv1(up1)
+            up1 = torch.cat([dsv1,dsv2,dsv3,dsv4], dim=1)
+
+        cnt1 = self.cntout1(up1)
+        sze1 = self.szeout1(up1)
+        up2 = F.upsample(up2, scale_factor=2, mode='trilinear')
+        cnt2 = self.cntout2(up2)
+        sze2 = self.szeout2(up2)
+        up3 = F.upsample(up3, scale_factor=4, mode='trilinear')
+        cnt3 = self.cntout3(up3)
+        sze3 = self.szeout3(up3)
+        # up4 = F.upsample(up4, scale_factor=8, mode='trilinear')
+        # cnt4 = self.cntout4(up4)
+        # sze4 = self.szeout4(up4)
+        return (cnt1, sze1), (cnt2, sze2), (cnt3, sze3)#, (cnt4, sze4)
+
+    @staticmethod
+    def apply_argmax_softmax(pred):
+        log_p = F.softmax(pred, dim=1)
+
+        return log_p
+
+
+
 class unet_CT_single_att_dsv_3D(nn.Module):
 
     def __init__(self, feature_scale=4, n_classes=21, is_deconv=True, in_channels=3,
@@ -454,3 +576,13 @@ class SizeLoss(nn.Module):
         fg_num = torch.sum(mask == 1) / 3.0
         loss = torch.sum(torch.abs(sze_gt - sze_pred) * mask) / fg_num
         return loss
+
+if __name__ == '__main__':
+    model = unet_CT_dsv_3D_FPN().cuda()
+    # model = unet_CT_dsv_3D()
+    x = torch.randn(1, 3, 128, 96, 128).cuda()
+    out = model(x)
+    for cnt, sze in out:
+        print(cnt.size(), sze.size())
+    a = [torch.tensor(1), torch.tensor(2), torch.tensor(4)]
+    print(torch.mean(torch.tensor(a)))

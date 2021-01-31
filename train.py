@@ -15,7 +15,7 @@ handler.setFormatter(formatter)
 handler.setLevel(0)
 logger.addHandler(handler)
 
-file_handler = logging.FileHandler('centernet.log', mode='a')
+file_handler = logging.FileHandler('checkpoints/resnet.log', mode='a')
 file_handler.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
 file_handler.setFormatter(formatter)
@@ -92,21 +92,20 @@ def train_cls():
 def train_cls_torch(cv, fold):
 
     datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
-                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file2,
                                   label_file=cfg.label_file, cross_validation=cv[fold])
     test_datagenerator = DataGenerator(cfg, training=False, mode='cls', data_root=cfg.DATA_ROOT,
-                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
+                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file2,
                                   label_file=cfg.label_file, cross_validation=cv[fold])
     load_pretrained = True
     if not os.path.exists(cfg.CHECKPOINTS_ROOT):
         os.mkdir(cfg.CHECKPOINTS_ROOT)
 
-    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'resnet18_cls2_2_torch_spacing1')
+    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'resnet18_cls3_torch_spacing1')
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
-    model = ClassifierTorch(cfg.INPUT_SHAPE, is_training=True, num_classes=3, model_dir=model_dir, config=cfg, fold=fold, num_classes2=2)
-    # print(tf.test.is_gpu_available())
-    # model.model(tf.ones((1, 192, 192, 192, 1)))
+    model = ClassifierTorch(cfg.INPUT_SHAPE, model_depth=18, senet=False, is_training=True, num_classes=3,
+                            model_dir=model_dir, config=cfg, fold=fold)
     if load_pretrained:
         checkpoint_file = model.find_last()
         if not os.path.exists(checkpoint_file):
@@ -116,16 +115,20 @@ def train_cls_torch(cv, fold):
             model.load_weights(checkpoint_file, by_name=False)
             # if continue_train:
             #     current_epoch = int(checkpoint_file.split('.')[-2].split('epoch')[-1])
+    # start_epoch = 50
+    # if fold == "fold3":
+    #     start_epoch = 17
+    model.train(datagenerator, test_datagenerator, learning_rate=0.0001, epochs=80, batch_size=8)
 
-    model.train2(datagenerator, test_datagenerator, learning_rate=0.0002, decay_steps=10000, epochs=80, batch_size=8)
-    #
 
 if __name__ == '__main__':
     with open(cfg.cross_validation, 'r') as f:
         cv = json.load(f)
     # fold = 'fold0'
-    for fold in cv.keys():
+    for fold in ['fold2', 'fold3', 'fold4']:
+        # fold = 'fold3'
         print(fold)
+        logger.info(fold)
         train_cls_torch(cv, fold)
     # train_cls()
     # train_detect()

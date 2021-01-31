@@ -12,6 +12,7 @@ cfg.train_anno_file = '/home/jxw/Downloads/mediastinal_1/annoation/annoation_128
 cfg.test_anno_file = '/home/jxw/Downloads/jiaotong_test/annoation_128.json'
 cfg.label_file = '/home/jxw/Downloads/mediastinal_1/mediastinal_label_1.xlsx'
 cfg.train_results_file = './results/train_single_torch.json'
+cfg.train_results_file2 = './results/5_fold.json'
 cfg.test_results_file2 = './results/test_single_torch.json'
 cfg.test_results_file = './results/test_multi_torch.json'
 cfg.CHECKPOINTS_ROOT = './checkpoints'

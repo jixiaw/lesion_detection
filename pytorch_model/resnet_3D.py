@@ -27,6 +27,30 @@ def conv1x1x1(in_planes, out_planes, stride=1):
                      bias=False)
 
 
+class SEModule(nn.Module):
+    def __init__(self, channels, reduction):
+        super(SEModule, self).__init__()
+        self.pool = nn.AdaptiveAvgPool3d(1)
+        self.fc1 = nn.Conv3d(channels, channels // reduction, kernel_size=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Conv3d(channels // reduction, channels, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        module_input = x
+        # x = x.mean((2, 3), keepdim=True)
+        x = self.pool(x)
+        # print(x.shape)
+        x = self.fc1(x)
+        # print(x.shape)
+        x = self.relu(x)
+        x = self.fc2(x)
+        # print(x.shape)
+        x = self.sigmoid(x)
+        # print(module_input)
+        return module_input * x
+
+
 class BasicBlock(nn.Module):
     expansion = 1
 
@@ -59,6 +83,39 @@ class BasicBlock(nn.Module):
 
         return out
 
+
+class SEBasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, reduction=16, stride=1, downsample=None):
+        super().__init__()
+
+        self.conv1 = conv3x3x3(in_planes, planes, stride)
+        self.bn1 = nn.BatchNorm3d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3x3(planes, planes)
+        self.bn2 = nn.BatchNorm3d(planes)
+        self.se_module = SEModule(planes, reduction)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out = self.se_module(out) + residual
+        out = self.relu(out)
+
+        return out
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -289,42 +346,43 @@ class cls_loss(nn.Module):
         :param labels:  (n,)  [0, 1, 2, 0, 1]
         :return:
         '''
+        w1 = torch.zeros_like(labels)
+        w2 = torch.ones_like(labels)
+        weights = torch.where(labels == 0, w1, w2)
         if self.extra_id == 0:
-            w1 = torch.zeros_like(labels)
-            w2 = torch.ones_like(labels)
-            weights = torch.where(labels == 0, w1, w2)
+            if weights.sum() == 0:
+                return torch.tensor(0)
             labels_new = torch.where(labels == 1, w1, w2)
             # print(labels_new)
             preds_softmax = F.softmax(preds, dim=1)
-            preds_logsoft = torch.log(preds_softmax)
+            # print(preds)
+            # print(preds_softmax)
+            preds_logsoft = torch.log(preds_softmax + 1e-10)
+            # print(preds_logsoft)
             # preds_softmax = preds_softmax.gather(1, labels_new.view(-1, 1))
             preds_logsoft = preds_logsoft.gather(1, labels_new.view(-1, 1))
             loss = -torch.mul(weights, preds_logsoft.t())
+            # print(loss, weights.sum())
             loss = loss.sum() / weights.sum()
             return loss
         else:
-            labels[labels > 1] = 1
-            return nn.CrossEntropyLoss()(preds, labels)
-
-if __name__ == '__main__':
-    pred = torch.randn(5, 2)
-    labels = torch.empty(5, dtype=torch.long).random_(3)
-    print(pred, labels)
-    print(cls_loss(extra_id=0)(pred, labels))
-    pred = pred[labels>0]
-    labels = labels[labels>0]
-    labels = labels - 1
-    print(pred, labels)
-    print(cls_loss(extra_id=2)(pred, labels))
+            # labels[labels > 1] = 1
+            return nn.CrossEntropyLoss()(preds, weights)
 
 
-def generate_model(model_depth, **kwargs):
+
+
+
+def generate_model(model_depth, senet=False, **kwargs):
     assert model_depth in [10, 18, 34, 50, 101, 152, 200]
 
     if model_depth == 10:
         model = ResNet(BasicBlock, [1, 1, 1, 1], get_inplanes(), **kwargs)
     elif model_depth == 18:
-        model = ResNet(BasicBlock, [2, 2, 2, 2], get_inplanes(), **kwargs)
+        if senet:
+            model = ResNet(SEBasicBlock, [2, 2, 2, 2], get_inplanes(), **kwargs)
+        else:
+            model = ResNet(BasicBlock, [2, 2, 2, 2], get_inplanes(), **kwargs)
     elif model_depth == 34:
         model = ResNet(BasicBlock, [3, 4, 6, 3], get_inplanes(), **kwargs)
     elif model_depth == 50:
@@ -337,3 +395,12 @@ def generate_model(model_depth, **kwargs):
         model = ResNet(Bottleneck, [3, 24, 36, 3], get_inplanes(), **kwargs)
 
     return model
+
+if __name__ == '__main__':
+    pred = torch.randn(1, 2, 2, 2, 2)
+    print(pred)
+    model = SEModule(2, 2)
+    print(model(pred))
+    # labels = torch.empty(5, dtype=torch.long).random_(3)
+    model = generate_model(18, True)
+    print(model)
