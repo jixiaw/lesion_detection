@@ -2,7 +2,117 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import math
-from .utils_network import UnetConv3, UnetDsv3, UnetUp3_CT, UnetUp3
+from .utils_network import UnetConv3, UnetDsv3, UnetUp3_CT, UnetUp3, UnetUp2_CT, UnetConv2, UnetUp2, UnetDsv2
+
+
+class unet_CT_dsv_2D(nn.Module):
+
+    def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3,
+                        is_batchnorm=True, is_dsv=False, is_merge=False):
+        super(unet_CT_dsv_2D, self).__init__()
+        self.is_deconv = is_deconv
+        self.in_channels = in_channels
+        self.is_batchnorm = is_batchnorm
+        self.feature_scale = feature_scale
+        self.is_dsv = is_dsv
+        self.is_merge = is_merge
+
+        filters = [64, 128, 256, 512, 1024]
+        filters = [int(x / self.feature_scale) for x in filters]
+
+        # downsampling
+        self.conv1 = UnetConv2(self.in_channels, filters[0], self.is_batchnorm, kernel_size=(3,3), padding_size=(1,1))
+        self.maxpool1 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv2 = UnetConv2(filters[0], filters[1], self.is_batchnorm, kernel_size=(3,3), padding_size=(1,1))
+        self.maxpool2 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv3 = UnetConv2(filters[1], filters[2], self.is_batchnorm, kernel_size=(3,3), padding_size=(1,1))
+        self.maxpool3 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv4 = UnetConv2(filters[2], filters[3], self.is_batchnorm, kernel_size=(3,3), padding_size=(1,1))
+        self.maxpool4 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.center = UnetConv2(filters[3], filters[4], self.is_batchnorm, kernel_size=(3,3), padding_size=(1,1))
+
+        # upsampling
+        self.up_concat4 = UnetUp2_CT(filters[4], filters[3], is_batchnorm)
+        self.up_concat3 = UnetUp2_CT(filters[3], filters[2], is_batchnorm)
+        self.up_concat2 = UnetUp2_CT(filters[2], filters[1], is_batchnorm)
+        self.up_concat1 = UnetUp2_CT(filters[1], filters[0], is_batchnorm)
+
+        # deep supervision
+        if is_dsv:
+            self.dsv4 = UnetDsv2(in_size=filters[3], out_size=n_classes, scale_factor=8)
+            self.dsv3 = UnetDsv2(in_size=filters[2], out_size=n_classes, scale_factor=4)
+            self.dsv2 = UnetDsv2(in_size=filters[1], out_size=n_classes, scale_factor=2)
+            self.dsv1 = nn.Conv2d(in_channels=filters[0], out_channels=n_classes, kernel_size=1)
+            if is_merge:
+                self.out = nn.Conv2d(n_classes*4, n_classes+2, 3, 1, 1, bias=False)
+            else:
+                self.out1 = nn.Conv2d(n_classes*4, n_classes, 3, 1, 1, bias=False)
+                self.out2 = nn.Conv2d(n_classes*4, 2, 3, 1, 1, bias=False)
+
+        # final conv (without any concat)
+        # self.final = nn.Conv3d(n_classes*4, n_classes, 1)
+        else:
+            if is_merge:
+                self.out = nn.Conv2d(filters[0], n_classes + 2, 3, 1, 1, bias=False)
+            else:
+                self.out1 = nn.Conv2d(filters[0], n_classes, 3, 1, 1, bias=False)
+                self.out2 = nn.Conv2d(filters[0], 2, 3, 1, 1, bias=False)
+            # self.out = nn.Conv2d(filters[0], n_classes + 3, 3, 1, 1, bias=False)
+
+
+        # initialise weights
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv3d):
+        #         init_weights(m, init_type='kaiming')
+        #     elif isinstance(m, nn.BatchNorm3d):
+        #         init_weights(m, init_type='kaiming')
+
+    def forward(self, inputs):
+        conv1 = self.conv1(inputs)
+        maxpool1 = self.maxpool1(conv1)
+
+        conv2 = self.conv2(maxpool1)
+        maxpool2 = self.maxpool2(conv2)
+
+        conv3 = self.conv3(maxpool2)
+        maxpool3 = self.maxpool3(conv3)
+
+        conv4 = self.conv4(maxpool3)
+        maxpool4 = self.maxpool4(conv4)
+
+        center = self.center(maxpool4)
+        up4 = self.up_concat4(conv4, center)
+        up3 = self.up_concat3(conv3, up4)
+        up2 = self.up_concat2(conv2, up3)
+        up1 = self.up_concat1(conv1, up2)
+
+        # Deep Supervision
+        if self.is_dsv:
+            dsv4 = self.dsv4(up4)
+            dsv3 = self.dsv3(up3)
+            dsv2 = self.dsv2(up2)
+            dsv1 = self.dsv1(up1)
+            up1 = torch.cat([dsv1,dsv2,dsv3,dsv4], dim=1)
+
+        if self.is_merge:
+            cnt = self.out(up1)
+            cnt = torch.sigmoid(cnt)
+            return cnt
+        cnt = self.out1(up1)
+        cnt = nn.functional.sigmoid(cnt)
+        sze = self.out2(up1)
+        sze = nn.functional.relu(sze)
+        return cnt, sze
+
+    @staticmethod
+    def apply_argmax_softmax(pred):
+        log_p = F.softmax(pred, dim=1)
+
+        return log_p
 
 
 class unet_3D(nn.Module):
@@ -81,13 +191,15 @@ class unet_3D(nn.Module):
 
 class unet_CT_dsv_3D(nn.Module):
 
-    def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3, is_batchnorm=True, is_dsv=False):
+    def __init__(self, feature_scale=4, n_classes=1, is_deconv=True, in_channels=3,
+                        is_batchnorm=True, is_dsv=False, is_merge=False):
         super(unet_CT_dsv_3D, self).__init__()
         self.is_deconv = is_deconv
         self.in_channels = in_channels
         self.is_batchnorm = is_batchnorm
         self.feature_scale = feature_scale
         self.is_dsv = is_dsv
+        self.is_merge = is_merge
 
         filters = [64, 128, 256, 512, 1024]
         filters = [int(x / self.feature_scale) for x in filters]
@@ -119,14 +231,21 @@ class unet_CT_dsv_3D(nn.Module):
             self.dsv3 = UnetDsv3(in_size=filters[2], out_size=n_classes, scale_factor=4)
             self.dsv2 = UnetDsv3(in_size=filters[1], out_size=n_classes, scale_factor=2)
             self.dsv1 = nn.Conv3d(in_channels=filters[0], out_channels=n_classes, kernel_size=1)
-            self.out1 = nn.Conv3d(n_classes*4, n_classes, 3, 1, 1, bias=False)
-            self.out2 = nn.Conv3d(n_classes*4, 3, 3, 1, 1, bias=False)
+            if is_merge:
+                self.out = nn.Conv3d(n_classes*4, n_classes+3, 3, 1, 1, bias=False)
+            else:
+                self.out1 = nn.Conv3d(n_classes*4, n_classes, 3, 1, 1, bias=False)
+                self.out2 = nn.Conv3d(n_classes*4, 3, 3, 1, 1, bias=False)
 
         # final conv (without any concat)
         # self.final = nn.Conv3d(n_classes*4, n_classes, 1)
         else:
-            self.out1 = nn.Conv3d(filters[0], n_classes, 3, 1, 1, bias=False)
-            self.out2 = nn.Conv3d(filters[0], 3, 3, 1, 1, bias=False)
+            if is_merge:
+                self.out = nn.Conv3d(filters[0], n_classes + 3, 3, 1, 1, bias=False)
+            else:
+                self.out1 = nn.Conv3d(filters[0], n_classes, 3, 1, 1, bias=False)
+                self.out2 = nn.Conv3d(filters[0], 3, 3, 1, 1, bias=False)
+            # self.out = nn.Conv3d(filters[0], n_classes + 3, 3, 1, 1, bias=False)
 
 
         # initialise weights
@@ -163,9 +282,14 @@ class unet_CT_dsv_3D(nn.Module):
             dsv1 = self.dsv1(up1)
             up1 = torch.cat([dsv1,dsv2,dsv3,dsv4], dim=1)
 
+        if self.is_merge:
+            cnt = self.out(up1)
+            cnt = torch.sigmoid(cnt)
+            return cnt
         cnt = self.out1(up1)
-        cnt = torch.sigmoid(cnt)
+        cnt = nn.functional.sigmoid(cnt)
         sze = self.out2(up1)
+        sze = nn.functional.relu(sze)
         return cnt, sze
 
     @staticmethod
@@ -294,7 +418,6 @@ class unet_CT_dsv_3D_FPN(nn.Module):
         log_p = F.softmax(pred, dim=1)
 
         return log_p
-
 
 
 class unet_CT_single_att_dsv_3D(nn.Module):
@@ -573,16 +696,15 @@ class SizeLoss(nn.Module):
     # regr_loss = tf.reduce_sum(tf.abs(sze_gt - sze_preds) * mask) / fg_num
     def forward(self, sze_pred, sze_gt):
         mask = torch.where(sze_gt != 0, torch.ones_like(sze_gt), torch.zeros_like(sze_gt))
-        fg_num = torch.sum(mask == 1) / 3.0
-        loss = torch.sum(torch.abs(sze_gt - sze_pred) * mask) / fg_num
+        fg_num = torch.sum(mask == 1) / sze_gt.shape[1]
+        loss = torch.sum(torch.abs(sze_gt - sze_pred) * mask)
+        if fg_num > 0:
+            loss /= fg_num
         return loss
 
 if __name__ == '__main__':
-    model = unet_CT_dsv_3D_FPN().cuda()
-    # model = unet_CT_dsv_3D()
-    x = torch.randn(1, 3, 128, 96, 128).cuda()
-    out = model(x)
-    for cnt, sze in out:
-        print(cnt.size(), sze.size())
-    a = [torch.tensor(1), torch.tensor(2), torch.tensor(4)]
-    print(torch.mean(torch.tensor(a)))
+    model = unet_CT_dsv_2D().cuda()
+    print(model)
+    img = torch.rand((8, 3, 96, 128)).cuda()
+    cnt, sze = model(img)
+    print(cnt.size(), sze.size())

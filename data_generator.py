@@ -13,8 +13,9 @@ import cv2
 from PIL import Image
 import imageio
 import json
-
-from data_processor import generate_gaussian_mask_3d_tf, hu2gray, resize, generate_gaussian_mask_3d
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from data_processor import generate_gaussian_mask_3d_tf, hu2gray, resize, generate_gaussian_mask_3d, generate_gaussian_mask
 from utils import get_bbox_region, IOU_3d, load_raw_data, draw_results, dist_3d, get_crop_region, IOU_3d_max, dist_3d_max
 from config import cfg
 
@@ -99,6 +100,10 @@ class DataGenerator(object):
         return res
 
     def load_labels(self, label_file_path):
+        if 'json' in label_file_path:
+            with open(label_file_path, 'r') as f:
+                res = json.load(f)
+            return res
         res = {}
         if label_file_path is None:
             for name in self.train_list:
@@ -153,6 +158,77 @@ class DataGenerator(object):
             return ims, cnt_targets, sze_targets, filenames
         else:
             return ims, cnt_targets, sze_targets
+
+    def next_batch_2d(self, batch_size, num=2):
+        ims = []
+        cnt_targets = []
+        sze_targets = []
+        filenames = []
+        num_per_img = batch_size // num
+        for j in range(num):
+            file_name = self.train_list[int((self.train_file_idx + j) % len(self.train_list))]
+            filenames.append(file_name)
+            img_path = osp.join(self.data_root_dir, file_name, file_name + '_128.npy')
+            img = self.load_image(img_path)
+            d, h, w = img.shape
+            img = hu2gray(img, WL=40, WW=500)
+            img = (img - self.cfg.mean) / self.cfg.std
+            annotation = self.annotations[file_name]
+            box = np.array(annotation).astype(np.int)
+
+            cnt_target = np.zeros((box.shape[0], 1, h, w))
+            sze_target = np.zeros((box.shape[0], 2, h, w))
+
+            minl = d
+            maxl = 0
+            for i in range(box.shape[0]):
+                cnt_target[i, 0] = generate_gaussian_mask(np.array([h, w]), box[i,1], box[i,2], box[i,4], box[i,5])
+                sze_target[i, 0, box[i, 1], box[i, 2]] = box[i, 4]
+                sze_target[i, 1, box[i, 1], box[i, 2]] = box[i, 5]
+                left = box[i, 0] - box[i, 3] // 3
+                right = box[i, 0] + box[i, 3] // 3
+                minl = min(minl, left)
+                maxl = max(maxl, right)
+
+            idxs = np.random.choice(np.arange(minl, maxl+1), min(num_per_img, maxl - minl + 1), False)
+            for idx in idxs:
+                if idx <= 0 or idx >= d - 1:
+                    continue
+                ims.append(img[idx-1:idx+2])
+                if box.shape[0] == 1:
+                    cnt_targets.append(cnt_target[0])
+                    sze_targets.append(sze_target[0])
+                else:
+                    cnt = np.zeros((1, h, w))
+                    sze = np.zeros((2, h, w))
+                    for i in range(box.shape[0]):
+                        if box[i, 0] - box[i, 3] // 2 <= idx <= box[i, 0] + box[i, 3] // 2:
+                            cnt += cnt_target[i]
+                            sze += cnt_target[i]
+                    cnt_targets.append(cnt)
+                    sze_targets.append(sze)
+            # print(len(ims) % num_per_img)
+            if len(ims) % num_per_img != 0:
+                idxs = np.random.choice(np.arange(1, d - maxl + minl - 2), num_per_img - len(ims) % num_per_img, False)
+                for idx in idxs:
+                    if idx >= minl:
+                        idx += maxl - minl + 1
+                    ims.append(img[idx-1:idx+2])
+                    cnt_targets.append(np.zeros_like(cnt_target[0]))
+                    sze_targets.append(np.zeros_like(sze_target[0]))
+
+        ims = np.array(ims, dtype=np.float32)
+        cnt_targets = np.array(cnt_targets, dtype=np.float32)
+        sze_targets = np.array(sze_targets, dtype=np.float32)
+
+        # cycle the batches
+        self.train_file_idx += num
+        if self.train_file_idx >= len(self.train_list):
+            self.train_file_idx = 0
+            if self.training:
+                np.random.shuffle(self.train_list)
+        # print ('ims shape:', ims.shape)
+        return ims, cnt_targets, sze_targets
 
     def next_test_batch(self, batch_size, channel_first=False):
         ims = []
@@ -210,7 +286,8 @@ class DataGenerator(object):
                 sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3], bbox[i, 4], bbox[i, 5])
         else:
             for i in range(0, bbox.shape[0]):
-                sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3] / 128.0, bbox[i, 4] / 96.0, bbox[i, 5] / 128.0)
+                # sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3] / 128.0, bbox[i, 4] / 96.0, bbox[i, 5] / 128.0)
+                sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3], bbox[i, 4], bbox[i, 5])
 
         # Crop && Data Augmentation
         if crop:
@@ -399,14 +476,15 @@ class DataGenerator(object):
             else:
                 iou = IOU_3d_max(bbox_pred, bbox_gt)
                 # print(iou)
-                bbox_tp = bbox_pred[iou > 0.3]
+                bbox_tp = bbox_pred[iou > 0.1]
                 bbox_tp = np.vstack((bbox_gt, bbox_tp))
                 bbox_fp = bbox_pred[iou < 0.1]
 
                 # print(bbox_tp.shape, bbox_fp.shape)
 
-                bbox_volume_tp = get_bbox_region(im, bbox_tp, random_crop=self.training, crop_large=True)
+                bbox_volume_tp = get_bbox_region(im, bbox_tp, ext=(5, 5, 5), random_crop=self.training, crop_large=True)
                 bbox_volume_fp = get_bbox_region(im, bbox_fp, crop_large=True)
+                # print(len(bbox_volume_tp), len(bbox_volume_fp))
 
                 valid_fp_id = []
                 for idx, v in enumerate(bbox_volume_fp):
@@ -424,7 +502,6 @@ class DataGenerator(object):
                 #     choice_fp_id = np.random.choice(valid_fp_id, 8 - num_tps, replace=False)
                 bbox_volume_fp = [bbox_volume_fp[idx] for idx in valid_fp_id]
                 # bbox_volume_tp = [bbox_volume_tp[idx] for idx in choice_tp_id]
-
                 # bbox_volume_tp = list(map(resize_32, bbox_volume_tp))
                 bbox_volume_tp = [resize(v, size) for v in bbox_volume_tp]
                 bbox_volume_fp = [resize(v, size) for v in bbox_volume_fp]
@@ -510,27 +587,154 @@ class DataGenerator(object):
         else:
             return np.expand_dims(volumes, -1), labels
 
+    def extract_box(self, file_path="./results/bbox", size=(64, 64, 64)):
+        if not os.path.exists(file_path):
+            os.mkdir(file_path)
+
+        for file_name in tqdm(self.detect_results.keys()):
+            labels = []
+            volumes = []
+            # file_name = self.train_list[int((self.train_file_idx + i) % len(self.train_list))]
+            im, bbox = self.get_img(file_name, gray=True)
+            bbox_pred = np.array(self.detect_results[file_name]['bbox_pred'], dtype=np.float32)
+            bbox_gt = np.array(self.detect_results[file_name]['bbox_gt'], dtype=np.float32)
+
+            bbox_pred *= np.array([im.shape[0], im.shape[1], im.shape[2], im.shape[0], im.shape[1], im.shape[2]])
+            bbox_gt *= np.array([im.shape[0], im.shape[1], im.shape[2], im.shape[0], im.shape[1], im.shape[2]])
+
+            maxsize = np.max(bbox_pred[:, 3:6], axis=1)
+            minsize = np.min(bbox_pred[:, 3:6], axis=1)
+            idx = maxsize < minsize * 5
+
+            bbox_pred = bbox_pred[idx]
+
+            bbox_pred = bbox_pred[:10]
+
+            iou = IOU_3d_max(bbox_pred, bbox_gt)
+            # print(iou)
+            bbox_tp = bbox_pred[iou > 0.1]
+            bbox_tp = np.vstack((bbox_gt, bbox_tp))
+            bbox_fp = bbox_pred[iou < 0.01]
+            # print(len(bbox_tp), len(bbox_fp))
+
+            bbox_volume_tp = get_bbox_region(im, bbox_tp, ext=(5, 5, 5), random_crop=self.training, crop_large=True)
+            bbox_volume_fp = get_bbox_region(im, bbox_fp, crop_large=True)
+            # print(len(bbox_volume_tp), len(bbox_volume_fp))
+            valid_fp_id = []
+            for idx, v in enumerate(bbox_volume_fp):
+                h, w, d = v.shape
+                if h < 3 or w < 3 or d < 3:
+                    continue
+                else:
+                    valid_fp_id.append(idx)
+
+            bbox_volume_fp = [bbox_volume_fp[idx] for idx in valid_fp_id]
+
+            bbox_volume_tp = [resize(v, size) for v in bbox_volume_tp]
+            bbox_volume_fp = [resize(v, size) for v in bbox_volume_fp]
+
+            # print(len(bbox_volume_tp), len(bbox_volume_fp))
+
+            label = [self.labels[file_name] + 1] * len(bbox_volume_tp) + [0] * len(bbox_volume_fp)
+            volumes += bbox_volume_tp
+            volumes += bbox_volume_fp
+            labels += label
+            # print(file_name, len(volumes))
+            for i in range(len(volumes)):
+                # path = os.path.join(file_path, str(i))
+                b = volumes[i].astype(np.uint8)
+                np.save(os.path.join(file_path, file_name + "_" + str(i) + "_" + str(labels[i]) + ".npy"), b)
+
+            # break
+
+
+from torch.utils.data import DataLoader, Dataset
+import torch
+
+
+class MyDataset(Dataset):
+    def __init__(self, is_train, cv, confg=cfg, label_file=None, file_path='./results/bbox', size=(64, 64, 64)):
+        alldata = os.listdir(file_path)
+        datamap = {}
+
+        self.label_file = None
+        if label_file is not None:
+            with open(label_file, 'r') as f:
+                self.label_file = json.load(f)
+        for d in alldata:
+            sp = d.split('.', 1)[0].split('_')
+            name = sp[0]
+            label = int(sp[-1])
+            if self.label_file is not None and label > 0:
+                label = self.label_file[name] + 1
+            if name in datamap:
+                datamap[name][0].append(os.path.join(file_path, d))
+                datamap[name][1].append(label)
+            else:
+                datamap[name] = [[os.path.join(file_path, d)], [label]]
+        namelist = cv['train'] if is_train else cv['val']
+        self.data = []
+        self.label = []
+        self.nums = [0, 0, 0]
+        for name in namelist:
+            self.data += datamap[name][0]
+            self.label += datamap[name][1]
+        for i in self.label:
+            self.nums[i] += 1
+        print(self.nums)
+        self.size = np.array(size)
+        self.is_train = is_train
+        self.cfg = confg
+
+    def __getitem__(self, i):
+        data = np.load(self.data[i]).astype(np.float32) / 255.0
+        data = (data - self.cfg.mean) / self.cfg.std
+
+        label = self.label[i]
+        if self.is_train and label != 0:
+            pos1 = np.random.randint(0, 7, 3)
+        else:
+            pos1 = np.array([3, 3, 3])
+        pos2 = pos1 + self.size
+        data = data[pos1[0]:pos2[0], pos1[1]:pos2[1], pos1[2]:pos2[2]]
+        data = np.expand_dims(data, 0)
+        return torch.tensor(data), label
+
+    def __len__(self):
+        return len(self.data)
+
 
 if __name__ == '__main__':
     with open(cfg.cross_validation, 'r') as f:
         cv = json.load(f)
     datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
-                                  annotation_file=cfg.test_anno_file, results_file=cfg.train_results_file,
-                                  label_file=None, cross_validation=cv['fold0'])
+                                  annotation_file=cfg.anno_file, results_file=cfg.train_results_file,
+                                  label_file=cfg.label_file, cross_validation=cv['fold0'])
+    for i in range(1000):
+        ims, cnt, sze = datagenerator.next_batch_2d(64, 4)
+        # print(i, ims.shape, cnt.shape, sze.shape)
+
     import time
-    t1 = time.time()
-    v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
+    # t1 = time.time()
+    # v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
     # v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
     # v, l = datagenerator.get_bbox_cls_region(2, max_num_box=128, channel_first=True)
 
     # v, l = datagenerator.get_bbox_cls_region_crop(2, 16)
+    # datagenerator.extract_box(size=(70, 70, 70))
     # t3 = time.time()
-    print(v.shape, l)
+    # print(v.shape, l)
     # datagenerator.save_raw_bbox(
     # im, cnt, sze = datagenerator.next_batch(2)
     # print(im.shape, cnt.shape, sze.shape)
-    t2 = time.time()
-    print(t2-t1)
+    # dataset = MyDataset(is_train=True, cv=cv['fold0'], label_file=cfg.label_file)
+    # testdataset = MyDataset(is_train=False, cv=cv['fold0'], label_file=cfg.label_file)
+    # print(len(dataset), len(testdataset))
+    # dataloader = DataLoader(dataset, 8, True)
+    # for i, (img, label) in enumerate(dataloader):
+    #     print(img.shape, label.shape)
+    # t2 = time.time()
+    # print(t2-t1)
 
 
 

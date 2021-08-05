@@ -366,12 +366,12 @@ def draw_pred_results(im, bbox_pred, bbox_gt, num_bbox=None, dir='./results/img/
             a, b = int(bbox_gt[i, 1] - bbox_gt[i, 4] / 2), int(bbox_gt[i, 2] - bbox_gt[i, 5] / 2)
             c, d = int(bbox_gt[i, 1] + bbox_gt[i, 4] / 2), int(bbox_gt[i, 2] + bbox_gt[i, 5] / 2)
             if bbox_gt[i, 0] - bbox_gt[i, 3] / 2 <= j <= bbox_gt[i, 0] + bbox_gt[i, 3] / 2:
-                cv2.rectangle(vis_im, (b, a), (d, c), (0, 255, 0), 1)
+                cv2.rectangle(vis_im, (b, a), (d, c), (0, 255, 0), 2)
         for i in range(min(n, num_bbox)):
             a, b = int(bbox_pred[i, 1] - bbox_pred[i, 4] / 2), int(bbox_pred[i, 2] - bbox_pred[i, 5] / 2)
             c, d = int(bbox_pred[i, 1] + bbox_pred[i, 4] / 2), int(bbox_pred[i, 2] + bbox_pred[i, 5] / 2)
             if bbox_pred[i, 0] - bbox_pred[i, 3] / 2 <= j <= bbox_pred[i, 0] + bbox_pred[i, 3] / 2:
-                cv2.rectangle(vis_im, (b, a), (d, c), (255, 0, 0), 1)
+                cv2.rectangle(vis_im, (b, a), (d, c), (255, 0, 0), 2)
         imageio.imsave(os.path.join(dir, '{}.png'.format(j)), np.uint8(vis_im))
 
 
@@ -436,13 +436,16 @@ def draw_result(datagenerator, model):
         imageio.imsave('./results/img/{}.png'.format(j), np.uint8(vis_im))
 
 
-def load_raw_data(data_path, data_name, resize_same=False):
+def load_raw_data(data_path, data_name, resize_same=False, new_spacing=None):
     raw_data = sitk.ReadImage(os.path.join(data_path, data_name, data_name + '.nii'))
     np_data = sitk.GetArrayFromImage(raw_data)
     origin = np.array(raw_data.GetOrigin())
     spacing = np.array(raw_data.GetSpacing())
     if resize_same:
-        new_spacing = np.array([1.0, 1.0, 1.0])
+        if new_spacing:
+            new_spacing = np.array(new_spacing)
+        else:
+            new_spacing = np.array([1.0, 1.0, 1.0])
         new_data = interpolate_volume(np_data, spacing, new_spacing)
         new_data = new_data.astype(np.int16)
         return new_data, None
@@ -597,3 +600,12 @@ def resize_same_shape(data_path, data_names, new_size=(128, 128, 128)):
         # else:
         #     print(data_name, "errors")
     return results
+
+if __name__ == '__main__':
+    import os, subprocess
+    p = subprocess.Popen("ls", stdout=subprocess.PIPE, stdin=subprocess.PIPE, shell=True)
+    p.wait()
+    print(p.stdout.read().decode())
+    # with os.popen("ls") as f:
+    #     print(f.read())
+    print("hello")
