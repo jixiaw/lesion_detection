@@ -265,11 +265,11 @@ if __name__ == '__main__':
     stime = time.time()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--mode', type=str,  default='train_test',
+    parser.add_argument('-m', '--mode', type=str,  default='test',
                         help='one out of: train / test / train_test / analysis / create_exp')
     parser.add_argument('-f','--folds', nargs='+', type=int, default=None,
                         help='None runs over all folds in CV. otherwise specify list of folds.')
-    parser.add_argument('--exp_dir', type=str, default='experiments/runet_exp/exp_dir',
+    parser.add_argument('--exp_dir', type=str, default='experiments/my_exp/exp_dir',
                         help='path to experiment dir. will be created if non existent.')
     parser.add_argument('--server_env', default=False, action='store_true',
                         help='change IO settings to deploy models on a cluster.')
@@ -280,7 +280,7 @@ if __name__ == '__main__':
                              'where source code might change before the job actually runs.')
     parser.add_argument('--resume', action="store_true", default=False,
                         help='if given, resume from checkpoint(s) of the specified folds.')
-    parser.add_argument('--exp_source', type=str, default='experiments/runet_exp',
+    parser.add_argument('--exp_source', type=str, default='experiments/my_exp',
                         help='specifies, from which source experiment to load configs and data_loader.')
     parser.add_argument('--no_benchmark', action='store_true', help="Do not use cudnn.benchmark.")
     parser.add_argument('--cuda_device', type=int, default=0, help="Index of CUDA device to use.")
@@ -339,7 +339,8 @@ if __name__ == '__main__':
         #     exp_id = mlflow.set_experiment(args.mlflow_experiment_id)
         #
         with torch.cuda.device(args.cuda_device):
-            for fold in ['fold0', 'fold1', 'fold2', 'fold3', 'fold4']:
+            # for fold in ['fold0', 'fold1', 'fold2', 'fold3', 'fold4']:
+            for fold in ['fold2', 'fold3', 'fold4']:
                 cf.fold_dir = os.path.join(cf.exp_dir, fold)
                 cf.fold = fold
                 cf.resume = args.resume
@@ -399,7 +400,8 @@ if __name__ == '__main__':
         #         mlflow.log_param("Batch size", cf.batch_size)
         #         mlflow.log_param("Nb RPN feature maps", cf.n_rpn_features)
         #         mlflow.log_param("Model Selection Criteria", ', '.join(cf.model_selection_criteria))
-            for fold in ['fold0', 'fold1', 'fold2', 'fold3', 'fold4']:
+        #     for fold in ['fold0', 'fold1', 'fold2', 'fold3', 'fold4']:
+            for fold in ['fold2', 'fold3', 'fold4']:
                 cf.fold_dir = os.path.join(cf.exp_dir, fold)
                 cf.fold = fold
                 cf.resume = args.resume

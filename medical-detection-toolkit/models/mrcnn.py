@@ -757,6 +757,11 @@ def refine_detections(cf, batch_ixs, rois, deltas, scores):
     # filter out low confidence boxes
     keep = idx
     keep_bool = (class_scores >= cf.model_min_confidence)
+    # for s in [0.01, 0.02, 0.05, 0.08, 0.1, 0.2]:
+    #     k = class_scores >= s
+    #     print(s, torch.sum(k))
+    # print(cf.model_min_confidence)
+    # print(np.sum(keep_bool))
     if not 0 in torch.nonzero(keep_bool).size():
 
         score_keep = torch.nonzero(keep_bool)[:, 0]

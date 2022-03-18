@@ -22,6 +22,8 @@ a pandas dataframe in the same directory containing the meta-info e.g. file path
 
 import numpy as np
 import os
+import random
+import cv2
 from collections import OrderedDict
 import pandas as pd
 import pickle
@@ -86,15 +88,26 @@ class MyDataloader:
         return train_list, annotations
 
     def transform_bbox(self, bbox, maxlen=128):
+        '''
+        x
+         -----
+         |
+         |
+        y
+        zyx
+        012
+        yxz
+        120
+        '''
         if isinstance(bbox, list):
             bbox = np.array(bbox)
         if bbox.ndim == 1:
             bbox = np.expand_dims(bbox, 0)
         bbox_new = np.zeros_like(bbox)
-        bbox_new[:, 0] = bbox[:, 1] - bbox[:, 4] / 2    # x1
-        bbox_new[:, 2] = bbox[:, 1] + bbox[:, 4] / 2    # x2
-        bbox_new[:, 1] = bbox[:, 2] - bbox[:, 5] / 2    # y1
-        bbox_new[:, 3] = bbox[:, 2] + bbox[:, 5] / 2    # y2
+        bbox_new[:, 0] = bbox[:, 1] - bbox[:, 4] / 2    # y1
+        bbox_new[:, 2] = bbox[:, 1] + bbox[:, 4] / 2    # y2
+        bbox_new[:, 1] = bbox[:, 2] - bbox[:, 5] / 2    # x1
+        bbox_new[:, 3] = bbox[:, 2] + bbox[:, 5] / 2    # x2
         bbox_new[:, 4] = bbox[:, 0] - bbox[:, 3] / 2    # z1
         bbox_new[:, 5] = bbox[:, 0] + bbox[:, 3] / 2    # z2
         bbox_new = np.maximum(bbox_new, 0)
@@ -150,11 +163,19 @@ class MyDataloader:
             filenames.append(file_name)
             img_path = os.path.join(self.data_root_dir, file_name, file_name + '_128.npy')
             im = self.load_image(img_path)
+            im = np.transpose(im, (1, 2, 0))
+
+            annotation = np.array(self.annotations[file_name])
+            # print("im: ", np.sum(im))
+            if self.training:
+                if random.random() < 0.5:
+                    im, annotation = fliplr(im, annotation)
+                im, annotation = scale_and_crop(im, annotation)
+                # print(im.shape, annotation)
+
             im = self.hu2gray(im).astype(np.float32) / 255.0
             im = (im - 0.196) / 0.278
-            # print("im: ", np.sum(im))
             ims.append(im)
-            annotation = np.array(self.annotations[file_name])
             annos.append(annotation)
             class_target.append(np.array([1 for i in range(len(annotation))]))
             roi_masks.append(np.zeros((annotation.shape[0], 1, im.shape[0], im.shape[1], im.shape[2])))
@@ -190,6 +211,7 @@ class MyDataloader:
         file_name = train_list[int(idx % len(train_list))]
         img_path = os.path.join(self.data_root_dir, file_name, file_name + '_128.npy')
         im = self.load_image(img_path)
+        im = np.transpose(im, (1, 2, 0))
         im = self.hu2gray(im).astype(np.float32) / 255.0
         im = (im - 0.196) / 0.278
         # print("im: ", np.sum(im))
@@ -207,6 +229,140 @@ class MyDataloader:
         return {'data': im, 'patient_roi_labels': class_target, 'pid': file_name, 'patient_bb_target': annotation,
                 'roi_masks': roi_masks, 'seg': seg, 'original_img_shape': (1, 1, 128, 128, 128)}
 
+
+def fliplr(im, box):
+    box_new = np.array(box)
+    im_new = np.fliplr(im)
+    h, w, d = im.shape
+    box_new[:, 1] = w - box[:, 3]
+    box_new[:, 3] = w - box[:, 1]
+    return im_new, box_new
+
+def scale_and_crop(im, box, ratio_range=(0.8, 1.2)):
+    h, w, d = im.shape
+    im, box = scale_random(im, box, ratio_range)
+    im, box = crop_random(im, box, (h, w, d))
+    return im, box
+
+
+def crop_random(im, box, shape=(128, 128, 128)):
+    h, w, d = im.shape
+    box = np.array(box)
+    h_off = 0
+    w_off = 0
+    d_off = 0
+    if h < shape[0] or w < shape[1] or d < shape[2]:
+        h_pad = max(shape[0] - h, 0)
+        w_pad = max(shape[1] - w, 0)
+        d_pad = max(shape[2] - d, 0)
+        im = np.pad(im, ((h_pad, h_pad), (w_pad, w_pad), (d_pad, d_pad)), mode='minimum')
+        h_off += h_pad
+        w_off += w_pad
+        d_off += d_pad
+        h += h_pad * 2
+        w += w_pad * 2
+        d += d_pad * 2
+    box_min = np.min(box, axis=0)
+    box_max = np.max(box, axis=0)
+
+    h_min = max(0, max(box_max[2], box_max[0]) + h_off - shape[0])
+    h_max = min(h - shape[0], min(box_min[0], box_min[2]) + h_off + shape[0])
+    w_min = max(0, max(box_max[3], box_max[1]) + w_off - shape[1])
+    w_max = min(w - shape[1], min(box_min[3], box_min[1]) + w_off + shape[1])
+    d_min = max(0, max(box_max[4], box_max[5]) + w_off - shape[2])
+    d_max = min(d - shape[2], min(box_min[4], box_min[5]) + d_off + shape[2])
+
+    if h_min > h_max or w_min > w_max:
+        print("crop random failded!!!")
+        for i in range(len(box)):
+            box[i, 1] += w_off
+            box[i, 3] += w_off
+            box[i, 0] += h_off
+            box[i, 2] += h_off
+            box[i, 4] += d_off
+            box[i, 5] += d_off
+        im = resize(im, shape)
+        box *= shape[0] / h
+        return im, box
+
+    y = np.random.randint(h_min, h_max + 1)
+    x = np.random.randint(w_min, w_max + 1)
+    z = np.random.randint(d_min, d_max + 1)
+    im = im[y:y + shape[0], x:x + shape[1], z:z + shape[2]]
+    h_off -= y
+    w_off -= x
+    d_off -= z
+    for i in range(len(box)):
+        box[i, 1] += w_off
+        box[i, 3] += w_off
+        box[i, 0] += h_off
+        box[i, 2] += h_off
+        box[i, 4] += d_off
+        box[i, 5] += d_off
+    return im, box
+
+def scale_random(im, box, ratio_range=(0.8, 1.2)):
+    p = np.random.rand()
+    ratio = (ratio_range[1] - ratio_range[0]) * p + ratio_range[0]
+    return scale(im, box, ratio)
+
+def scale(im, box, ratio=1.0):
+    if scale == 1.0:
+        return im, box
+    shape = (np.array(im.shape) * ratio).astype(np.int)
+    im = resize(im, shape)
+    box = np.array(box) * ratio
+    return im, box
+
+def resize(volume, target_shape):
+    '''
+    resize volume to specified shape
+    '''
+    if target_shape[0] <= 0:
+        target_shape[0] = volume.shape[0]
+    if target_shape[1] <= 0:
+        target_shape[1] = volume.shape[1]
+    if target_shape[2] <= 0:
+        target_shape[2] = volume.shape[2]
+
+    D, H, W = volume.shape
+    # cv2 can not process image with channels > 512
+    if W <= 512:
+        res = cv2.resize(np.float32(volume), dsize=(target_shape[1], target_shape[0]))
+    else:
+        N = 512
+        results = []
+        for i in range(0, int(W / N + 1)):
+            l = i * N
+            r = min((i + 1) * N, W)
+            patch = volume[:, :, l:r]
+            resized_patch = cv2.resize(np.float32(patch), dsize=(target_shape[1], target_shape[0]))
+            if len(resized_patch.shape) == 2:
+                resized_patch = np.expand_dims(resized_patch, axis=-1)
+            results.append(resized_patch)
+
+        res = np.concatenate(results, axis=-1)
+
+    res = np.transpose(res, (2, 1, 0))
+    D, H, W = res.shape
+    if W <= 512:
+        res = cv2.resize(np.float32(res), dsize=(target_shape[1], target_shape[2]))
+    else:
+        N = 512
+        results = []
+        for i in range(0, int(W / N + 1)):
+            l = i * N
+            r = min((i + 1) * N, W)
+            patch = res[:, :, l:r]
+            resized_patch = cv2.resize(np.float32(patch), dsize=(target_shape[1], target_shape[2]))
+            if len(resized_patch.shape) == 2:
+                resized_patch = np.expand_dims(resized_patch, axis=-1)
+            results.append(resized_patch)
+
+        res = np.concatenate(results, axis=-1)
+
+    res = np.transpose(res, (2, 1, 0))
+    return res
 def get_train_generators(cf, logger):
     """
     wrapper function for creating the training batch generator pipeline. returns the train/val generators.

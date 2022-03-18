@@ -608,7 +608,7 @@ class DataGenerator(object):
 
             bbox_pred = bbox_pred[idx]
 
-            bbox_pred = bbox_pred[:10]
+            bbox_pred = bbox_pred[:8]
 
             iou = IOU_3d_max(bbox_pred, bbox_gt)
             # print(iou)
@@ -617,8 +617,8 @@ class DataGenerator(object):
             bbox_fp = bbox_pred[iou < 0.01]
             # print(len(bbox_tp), len(bbox_fp))
 
-            bbox_volume_tp = get_bbox_region(im, bbox_tp, ext=(5, 5, 5), random_crop=self.training, crop_large=True)
-            bbox_volume_fp = get_bbox_region(im, bbox_fp, crop_large=True)
+            bbox_volume_tp = get_bbox_region(im, bbox_tp, ext=(5, 5, 0), random_crop=False, crop_large=True, scale=2)
+            bbox_volume_fp = get_bbox_region(im, bbox_fp, ext=(1, 1, 0), random_crop=False, crop_large=True, scale=2)
             # print(len(bbox_volume_tp), len(bbox_volume_fp))
             valid_fp_id = []
             for idx, v in enumerate(bbox_volume_fp):
@@ -710,6 +710,8 @@ if __name__ == '__main__':
     datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
                                   annotation_file=cfg.anno_file, results_file=cfg.train_results_file,
                                   label_file=cfg.label_file, cross_validation=cv['fold0'])
+    datagenerator.extract_box('/media/jxw/B8BCC018BCBFCF5E/linux/bbox', (70, 70, 16))
+
     for i in range(1000):
         ims, cnt, sze = datagenerator.next_batch_2d(64, 4)
         # print(i, ims.shape, cnt.shape, sze.shape)

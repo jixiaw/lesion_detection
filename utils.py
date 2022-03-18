@@ -69,14 +69,14 @@ def get_results(datagenerator, model):
     return train_res
 
 
-def get_results_torch(datagenerator, model):
+def get_results_torch(datagenerator, model, th=0.01):
     train_res = {}
     device = torch.device('cuda:0')
     model.eval()
     with torch.no_grad():
         for name in tqdm(datagenerator.train_list):
             bbox = {}
-            im, anno = datagenerator.get_test_img_from_name(name, return_box=True, channel_first=False)
+            im, anno = datagenerator.get_test_img_from_name(name, crop=False, return_box=True, channel_first=False)
 
             # im, cnt_gt, sze_gt = datagenerator.get_img_from_name(name)
             im = torch.from_numpy(np.transpose(im, (0, 4, 1, 2, 3))).to(device)
@@ -86,7 +86,7 @@ def get_results_torch(datagenerator, model):
             cnt_pred = np.transpose(cnt_pred, (0, 2, 3, 4, 1))
             sze_pred = np.transpose(sze_pred, (0, 2, 3, 4, 1))
 
-            pred_bboxs = generate_bbox_from_pred(cnt_pred, sze_pred)
+            pred_bboxs = generate_bbox_from_pred(cnt_pred, sze_pred, th, (0, 0, 0))
             pos, sze, score = pred_bboxs[0]
             bbox_gt = anno[0] / 128.0
             bbox_pred = np.hstack((pos, sze))
@@ -96,7 +96,7 @@ def get_results_torch(datagenerator, model):
             train_res[name] = bbox
     return train_res
 
-def get_results_torch_FPN(datagenerator, model):
+def get_results_torch_FPN(datagenerator, model, th=0.01):
     train_res = {}
     device = torch.device('cuda:0')
     model.eval()
@@ -118,7 +118,7 @@ def get_results_torch_FPN(datagenerator, model):
                 cnt_pred = np.transpose(cnt_pred, (0, 2, 3, 4, 1))
                 sze_pred = np.transpose(sze_pred, (0, 2, 3, 4, 1))
 
-                pred_bboxs = generate_bbox_from_pred(cnt_pred, sze_pred)
+                pred_bboxs = generate_bbox_from_pred(cnt_pred, sze_pred, th, (0, 0, 0))
                 pos, sze, score = pred_bboxs[0]
                 bbox_gt = anno[0] / 128.0
                 bbox_pred = np.hstack((pos, sze))
@@ -146,10 +146,11 @@ def get_all_results(datagenerator, model):
     return res
 
 
-def generate_bbox_from_pred(cnt_pred, sze_pred, offset=(0, 16, 0)):
+def generate_bbox_from_pred(cnt_pred, sze_pred, th=0.01, offset=(0, 16, 0)):
     '''
     :param cnt_pred: (n, w, h, d, 1)
     :param sze_pred: (n, w, h, d, 3)
+    :param th: 阈值
     :param offset: 预测的是裁剪后的图，需要恢复到原图
     :return: list: 每个bbox包含(位置、大小、分数), 均归一化
     '''
@@ -161,15 +162,15 @@ def generate_bbox_from_pred(cnt_pred, sze_pred, offset=(0, 16, 0)):
         sze_pred_temp = sze_pred[i]
         peaks = ndimage.maximum_filter(cnt_pred_temp, size=(3, 3, 3))
         idx = np.where(peaks == cnt_pred_temp)
-        num = np.sum(cnt_pred_temp[idx] > 0.01)
+        num = np.sum(cnt_pred_temp[idx] > th)
         # nums.append(num)
         sorted_id = np.argsort(cnt_pred_temp[idx])
         max_id = sorted_id[::-1][:num]
         pos = (idx[0][max_id], idx[1][max_id], idx[2][max_id])
         sze = sze_pred_temp[pos]
-        if np.max(sze) <= 1:
+        # if np.max(sze) <= 1:
             # sze[:, 0] *= 128
-            sze[:, 1] *= 96.0 / 128
+            # sze[:, 1] *= 96.0 / 128
             # sze[:, 2] *= 128
         # sze = sze
         score = cnt_pred_temp[pos]
@@ -183,6 +184,8 @@ def IOU_3d(bbox_pred, bbox_gt, iobb=False, offset=1.0/128):
         bbox_pred = np.array(bbox_pred)
     if isinstance(bbox_gt, list):
         bbox_gt = np.array(bbox_gt)
+    if bbox_pred.shape[1] == 0:
+        return np.zeros(bbox_gt.shape[0])
     xmin = bbox_pred[:, 0] - bbox_pred[:, 3] / 2
     xmax = bbox_pred[:, 0] + bbox_pred[:, 3] / 2
     ymin = bbox_pred[:, 1] - bbox_pred[:, 4] / 2
@@ -470,7 +473,7 @@ def load_raw_data(data_path, data_name, resize_same=False, new_spacing=None):
         return np_data, None
 
 
-def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False, crop_large=False):
+def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False, crop_large=False, scale=1.0):
     '''
     :param crop_large: 为 True 表示按最长边进行裁剪
     :param random_crop:
@@ -496,10 +499,10 @@ def get_bbox_region(volume, bbox, ext=(1, 1, 1), random_crop=False, crop_large=F
         # print(bbox)
     bbox[bbox < 0] = 0
     if crop_large:
-        max_size = np.max(bbox[:, 3:6], axis=1)
-        bbox[:, 3] = max_size
-        bbox[:, 4] = max_size
-        bbox[:, 5] = max_size
+        max_size = np.max(bbox[:, 3:5], axis=1)
+        bbox[:, 3] = max_size * scale
+        bbox[:, 4] = max_size * scale
+        bbox[:, 5] = 32
     x1 = np.maximum(0, bbox[:, 0] - bbox[:, 3] / 2 - ext[0]).astype(np.int)
     x2 = np.minimum(w, bbox[:, 0] + bbox[:, 3] / 2 + 1 + ext[0]).astype(np.int)
     y1 = np.maximum(0, bbox[:, 1] - bbox[:, 4] / 2 - ext[1]).astype(np.int)

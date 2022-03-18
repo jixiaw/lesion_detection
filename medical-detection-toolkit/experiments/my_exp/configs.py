@@ -79,7 +79,7 @@ class configs(DefaultConfigs):
         self.patch_size_2D = [288, 288]
         # self.pre_crop_size_3D = [156, 156, 96]
         # self.patch_size_3D = [128, 128, 64]
-        self.pre_crop_size_3D = [140, 140, 140]
+        self.pre_crop_size_3D = [128, 128, 128]
         self.patch_size_3D = [128, 128, 128]
         self.patch_size = self.patch_size_2D if self.dim == 2 else self.patch_size_3D
         self.pre_crop_size = self.pre_crop_size_2D if self.dim == 2 else self.pre_crop_size_3D
@@ -103,7 +103,7 @@ class configs(DefaultConfigs):
 
         self.start_filts = 48 if self.dim == 2 else 18
         self.end_filts = self.start_filts * 4 if self.dim == 2 else self.start_filts * 2
-        self.res_architecture = 'resnet50' # 'resnet101' , 'resnet50'
+        self.res_architecture = 'resnet101' # 'resnet101' , 'resnet50'
         self.norm = None # one of None, 'instance_norm', 'batch_norm'
         self.weight_decay = 0
 
@@ -114,7 +114,7 @@ class configs(DefaultConfigs):
         #  Schedule / Selection #
         #########################
 
-        self.num_epochs = 100
+        self.num_epochs = 50
         self.num_train_batches = 200 if self.dim == 2 else 200
         self.batch_size = 20 if self.dim == 2 else 8
 
@@ -239,11 +239,13 @@ class configs(DefaultConfigs):
         self.num_seg_classes = 2  # foreground vs. background
 
         # feature map strides per pyramid level are inferred from architecture.
-        self.backbone_strides = {'xy': [4, 8, 16, 32], 'z': [1, 2, 4, 8]}
+        # self.backbone_strides = {'xy': [4, 8, 16, 32], 'z': [1, 2, 4, 8]}
+        self.backbone_strides = {'xy': [4, 8, 16, 32], 'z': [4, 8, 16, 32]}
 
         # anchor scales are chosen according to expected object sizes in data set. Default uses only one anchor scale
         # per pyramid level. (outer list are pyramid levels (corresponding to BACKBONE_STRIDES), inner list are scales per level.)
-        self.rpn_anchor_scales = {'xy': [[8], [16], [32], [64]], 'z': [[2], [4], [8], [16]]}
+        # self.rpn_anchor_scales = {'xy': [[8], [16], [32], [64]], 'z': [[2], [4], [8], [16]]}
+        self.rpn_anchor_scales = {'xy': [[8], [16], [32], [64]], 'z': [[8], [16], [32], [64]]}
 
         # choose which pyramid levels to extract features from: P2: 0, P3: 1, P4: 2, P5: 3.
         self.pyramid_levels = [0, 1, 2, 3]
@@ -294,8 +296,8 @@ class configs(DefaultConfigs):
 
         # Final selection of detections (refine_detections)
         self.model_max_instances_per_batch_element = 10 if self.dim == 2 else 30  # per batch element and class.
-        self.detection_nms_threshold = 1e-5  # needs to be > 0, otherwise all predictions are one cluster.
-        self.model_min_confidence = 0.1
+        self.detection_nms_threshold = 0.7  # needs to be > 0, otherwise all predictions are one cluster.
+        self.model_min_confidence = 0.02
 
         if self.dim == 2:
             self.backbone_shapes = np.array(
