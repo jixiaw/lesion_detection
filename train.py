@@ -23,6 +23,8 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+# remove
 def train_detect():
     # datagenerator = DataGenerator(cfg, training=True)
     datagenerator = DataGenerator(cfg, training=True, mode='detect', data_root=cfg.DATA_ROOT,
@@ -55,7 +57,7 @@ def train_detect():
     # print(img.shape, cnt.shape, sze.shape)
     # from sklearn.model_selection import train_test_split
 
-
+# remove
 def train_cls():
     with open(cfg.cross_validation, 'r') as f:
         cv = json.load(f)

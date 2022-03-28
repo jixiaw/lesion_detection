@@ -23,13 +23,13 @@ handler.setFormatter(formatter)
 handler.setLevel(0)
 logger.addHandler(handler)
 
-file_handler = logging.FileHandler('centernet.log', mode='a')
+file_handler = logging.FileHandler('centernet_final.log', mode='a')
 file_handler.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-
+# remove
 class myDataset(Dataset):
     def __init__(self, cfg, cv, training=True):
         self.annotation_file = cfg.crop_anno_file
@@ -129,6 +129,7 @@ def log(info):
 # test_data = myDataset(cfg, training=False)
 # train_data_loader = DataLoader(train_data, batch_size=2, shuffle=True)
 # test_data_loader = DataLoader(test_data, batch_size=2, shuffle=False)
+# remove
 def train_crop(cv, fold):
     BATCH_SIZE = 4
     start_epoch = 0
@@ -240,9 +241,9 @@ def train(cv, fold):
     # model = unet_CT_dsv_3D(n_classes=1, in_channels=1, is_dsv=False, is_merge=True).to(device)
     loss1 = CenterLoss().to(device)
     loss2 = SizeLoss().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0002)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1500, gamma=0.9)
-    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'centernet_size_relu', fold)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=4000, gamma=0.2)
+    model_dir = os.path.join(cfg.CHECKPOINTS_ROOT, 'centernet_final_aug', fold)
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     load_model = True
@@ -259,7 +260,7 @@ def train(cv, fold):
     logger.info(fold)
     BATCH_SIZE = 4
     start_epoch = 1
-    EPOCH = 100 + start_epoch
+    EPOCH = 50 + start_epoch
     steps = len(datagenerator.train_list) // BATCH_SIZE
     # steps = 2
     min_cnt_loss = 1000
@@ -281,7 +282,7 @@ def train(cv, fold):
             # pred = model(ims)
             optimizer.zero_grad()
             cnt_loss = loss1(cnt_pred, cnt_gt) * 0.5
-            sze_loss = loss2(sze_pred, sze_gt) * 0.1
+            sze_loss = loss2(sze_pred, sze_gt) * 10
             loss = cnt_loss + sze_loss
             loss.backward()
             optimizer.step()
@@ -330,7 +331,7 @@ def train(cv, fold):
             print('save model in ', model_name)
             logger.info('save model in ' + model_name)
 
-
+# remove
 def train_FPN(cv, fold):
     datagenerator = DataGenerator(cfg, training=True, mode='detect', data_root=cfg.DATA_ROOT,
                                   annotation_file=cfg.train_anno_file, results_file=None, label_file=None,
@@ -450,7 +451,7 @@ def train_FPN(cv, fold):
             print('save model in ', model_name)
             logger.info('save model in ' + model_name)
 
-
+# remove
 def train_2d(cv, fold):
     datagenerator = DataGenerator(cfg, training=True, mode='detect', data_root=cfg.DATA_ROOT,
                                   annotation_file=cfg.anno_file, results_file=None, label_file=None,
@@ -563,8 +564,8 @@ if __name__ == '__main__':
     with open(cfg.cross_validation, 'r') as f:
         cv = json.load(f)
     # fold = 'fold0'
-    for fold in cv.keys():
-    # for fold in ['fold0', 'fold2', 'fold3', 'fold4']:
+    # for fold in cv.keys():
+    for fold in ['fold0', 'fold1', 'fold2', 'fold3', 'fold4']:
         print(fold)
         # train_crop(cv, fold)
-        train_2d(cv, fold)
+        train(cv, fold)

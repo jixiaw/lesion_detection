@@ -278,7 +278,7 @@ if __name__ == '__main__':
                         help='load configs from existing exp_dir instead of source dir. always done for testing, '
                              'but can be set to true to do the same for training. useful in job scheduler environment, '
                              'where source code might change before the job actually runs.')
-    parser.add_argument('--resume', action="store_true", default=False,
+    parser.add_argument('--resume', action="store_true", default=True,
                         help='if given, resume from checkpoint(s) of the specified folds.')
     parser.add_argument('--exp_source', type=str, default='experiments/my_exp',
                         help='specifies, from which source experiment to load configs and data_loader.')

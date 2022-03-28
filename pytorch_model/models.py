@@ -289,7 +289,7 @@ class unet_CT_dsv_3D(nn.Module):
         cnt = self.out1(up1)
         cnt = nn.functional.sigmoid(cnt)
         sze = self.out2(up1)
-        sze = nn.functional.relu(sze)
+        # sze = nn.functional.relu(sze)
         return cnt, sze
 
     @staticmethod

@@ -16,7 +16,7 @@ import json
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from data_processor import generate_gaussian_mask_3d_tf, hu2gray, resize, generate_gaussian_mask_3d, generate_gaussian_mask
-from utils import get_bbox_region, IOU_3d, load_raw_data, draw_results, dist_3d, get_crop_region, IOU_3d_max, dist_3d_max
+from utils import get_bbox_region, IOU_3d, load_raw_data, draw_results, dist_3d, get_crop_region, IOU_3d_max, dist_3d_max, rotate
 from config import cfg
 
 
@@ -230,6 +230,7 @@ class DataGenerator(object):
         # print ('ims shape:', ims.shape)
         return ims, cnt_targets, sze_targets
 
+    # remove
     def next_test_batch(self, batch_size, channel_first=False):
         ims = []
         cnt_targets = []
@@ -271,7 +272,7 @@ class DataGenerator(object):
         bbox = np.array(annotation)  # shape (n, 6)
         im_gray = hu2gray(im, WL=40, WW=500)
         # Normalization
-        im_gray = np.expand_dims(im_gray, -1).astype(np.float32) / 255.0
+        im_gray = im_gray.astype(np.float32) / 255.0
         im_gray = (im_gray - self.cfg.mean) / self.cfg.std
         # im_gray = (im_gray - 0.196) / 0.278
         target_shape = np.int32(origin_shape)
@@ -280,15 +281,32 @@ class DataGenerator(object):
         bbox = bbox.astype(np.int)
         cnt_target = generate_gaussian_mask_3d(target_shape, bbox)
         # print ('num_pos:', np.sum(cnt_target==1))
+
+        if random_crop:
+            if np.random.random() < 0.5:
+                im_gray = im_gray[..., ::-1]
+                bbox[:, 2] = origin_shape[-1] - bbox[:, 2]
+            if bbox.shape[0] == 1 and np.random.random() < 0.5:
+                angle = np.random.randint(-10, 11)
+                cnt_target_temp = rotate(cnt_target, angle, channel_first=True)
+                idx = np.where(cnt_target == cnt_target.max())
+                if idx[0].shape[0] > 1:
+                    print("rotate error")
+                else:
+                    im_gray = rotate(im_gray, angle, channel_first=True)
+                    cnt_target = cnt_target_temp.copy()
+                    cnt_target[idx] = 1.0
+                    bbox[0, :3] = idx
+
         sze_target = np.zeros((target_shape[0], target_shape[1], target_shape[2], 3))
         if not norm_size:
             for i in range(0, bbox.shape[0]):
                 sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3], bbox[i, 4], bbox[i, 5])
         else:
             for i in range(0, bbox.shape[0]):
-                # sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3] / 128.0, bbox[i, 4] / 96.0, bbox[i, 5] / 128.0)
-                sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3], bbox[i, 4], bbox[i, 5])
-
+                sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3] / 128.0, bbox[i, 4] / 96.0, bbox[i, 5] / 128.0)
+                # sze_target[bbox[i, 0], bbox[i, 1], bbox[i, 2]] = (bbox[i, 3], bbox[i, 4], bbox[i, 5])
+        im_gray = np.expand_dims(im_gray, -1)
         # Crop && Data Augmentation
         if crop:
             crop_size2 = self.cfg.INPUT_SHAPE[1]
@@ -710,7 +728,7 @@ if __name__ == '__main__':
     datagenerator = DataGenerator(cfg, training=True, mode='cls', data_root=cfg.DATA_ROOT,
                                   annotation_file=cfg.anno_file, results_file=cfg.train_results_file,
                                   label_file=cfg.label_file, cross_validation=cv['fold0'])
-    datagenerator.extract_box('/media/jxw/B8BCC018BCBFCF5E/linux/bbox', (70, 70, 16))
+    datagenerator.extract_box('/media/jxw/B8BCC018BCBFCF5E/linux/bbox', (70, 70, 70))
 
     for i in range(1000):
         ims, cnt, sze = datagenerator.next_batch_2d(64, 4)

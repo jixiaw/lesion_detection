@@ -28,6 +28,7 @@ from pytorch_model.vgg import vgg16_bn, vgg19_bn
 from pytorch_model.densenet import DenseNet3d
 logger = logging.getLogger('train centernet')
 
+# remove
 class Classifier():
     def __init__(self, input_shape, is_training, num_classes, model_dir, config):
         self._is_training = is_training
@@ -183,6 +184,7 @@ class Classifier():
         sys.stdout.write("[{:<{}}] {}/{}".format("=" * cur_len, bar_len, cur, total))
         sys.stdout.flush()
 
+
 class ClassifierTorch():
     def __init__(self, input_shape, is_training, num_classes, model_dir, config, model_name="vgg16",
                        fold=None, num_classes2=None):
@@ -258,7 +260,7 @@ class ClassifierTorch():
         # self.model(tf.ones((1, 32, 32, 32, 1)))  # 初始化模型，不加的话加载模型会报错
         self.model.load_state_dict(torch.load(filepath))
 
-    # 三分类
+    # remove
     def train(self, data_provider, test_data_provider, learning_rate, epochs, batch_size):
         '''
         Start training the model from specified dataset
@@ -382,6 +384,7 @@ class ClassifierTorch():
                 print('Saving weights to %s' % (self.checkpoint_path))
                 torch.save(self.model.state_dict(), self.checkpoint_path)
 
+    # 三分类
     def train4(self, dataloader_train, dataloader_test, learning_rate, epochs, start_epoch=0):
         '''
         Start training the model from specified dataset
@@ -515,7 +518,7 @@ class ClassifierTorch():
                                                     self.epoch + 1, recall, test_acc))
                 print('Saving weights to %s' % (self.checkpoint_path))
                 torch.save(self.model.state_dict(), self.checkpoint_path)
-
+    # remove
     def train2(self, data_provider, test_data_provider, learning_rate, epochs, batch_size, start_epoch=0):
         assert self._is_training == True, 'not in training mode'
         assert self.num_classes2 is not None, 'not in two cls mode'

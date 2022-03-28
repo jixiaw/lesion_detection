@@ -604,6 +604,27 @@ def resize_same_shape(data_path, data_names, new_size=(128, 128, 128)):
         #     print(data_name, "errors")
     return results
 
+
+def rotate(image, angle, channel_first=True, center=None, scale=1.0):
+    # grab the dimensions of the image
+    if channel_first:
+        image = np.transpose(image, (1, 2, 0))
+    (h, w) = image.shape[:2]
+
+    # if the center is None, initialize it as the center of
+    # the image
+    if center is None:
+        center = (w // 2, h // 2)
+
+    # perform the rotation
+    M = cv2.getRotationMatrix2D(center, angle, scale)
+    rotated = cv2.warpAffine(image, M, (w, h))
+    if channel_first:
+        rotated = np.transpose(rotated, (2, 0, 1))
+    # return the rotated image
+    return rotated
+
+
 if __name__ == '__main__':
     import os, subprocess
     p = subprocess.Popen("ls", stdout=subprocess.PIPE, stdin=subprocess.PIPE, shell=True)
